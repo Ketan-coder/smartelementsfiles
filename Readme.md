@@ -1,4 +1,4 @@
-# SmartComponents
+# SmartElements
 
 > Drop-in Web Components for Django (and any HTML backend).  
 > Tables. Forms. Charts. Inputs. Animations. Grids. Permissions.  
@@ -15,7 +15,7 @@
 
 ## What is this?
 
-SmartComponents is a library of HTML Web Components that replace the boilerplate you rewrite on every project. Instead of wiring up 80 lines of fetch + render + validate + paginate JavaScript, you write a single HTML tag.
+SmartElements is a library of HTML Web Components that replace the boilerplate you rewrite on every project. Instead of wiring up 80 lines of fetch + render + validate + paginate JavaScript, you write a single HTML tag.
 
 ```html
 <!-- Before: ~95 lines of fetch + render + sort + paginate JS -->
@@ -123,7 +123,7 @@ your_project/
 <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
 <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
 
-<!-- SmartComponents (in this order) -->
+<!-- SmartElements (in this order) -->
 <script type="module" src="{% static 'resources/js/components/smart_core.js' %}"></script>
 <script type="module" src="{% static 'resources/js/components/smart_motion.js' %}"></script>
 <script type="module" src="{% static 'resources/js/components/smart_effect.js' %}"></script>
@@ -297,7 +297,7 @@ async def websocket_connect(self, event):
 ## Project Structure
 
 ```
-SmartComponents/
+SmartElements/
 ├── input.js                 # <smart-input> — 8+ input types
 ├── smart_table.js           # <smart-table> — full data table
 ├── smart_image.js           # <smart-image> — lazy load + lightbox
@@ -394,13 +394,13 @@ Mumbai, India
 
 Backend: Python / Django · Frontend: Vanilla JS, Flutter · ~2 years building production web apps
 
-> Built SmartComponents because I was tired of writing the same 80-line fetch + render + validate + paginate boilerplate on every single project.
+> Built SmartElements because I was tired of writing the same 80-line fetch + render + validate + paginate boilerplate on every single project.
 
 ---
 
 ## Acknowledgements
 
-SmartComponents is built on top of these excellent open-source libraries:
+SmartElements is built on top of these excellent open-source libraries:
 
 - [Chart.js](https://www.chartjs.org/) — static charts
 - [ApexCharts](https://apexcharts.com/) — live WebSocket charts
