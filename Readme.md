@@ -141,6 +141,28 @@ your_project/
 <script type="module" src="{% static 'resources/js/components/smart_grid.js' %}"></script>
 <script type="module" src="{% static 'resources/js/components/smart_permission.js' %}"></script>
 
+<!-- OR -->
+<!-- SmartElements (in this order) -->
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_core.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_motion.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_effect.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_filter_box.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/counter_animation.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_button.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/button.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_search_input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/rich_text_input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_list_tile.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_image.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_table.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_form.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_grid.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_state.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_chart.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_permission.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_data.js"></script>
+
 <!-- Global singletons — once in base.html, inside data-barba="container" -->
 <smart-toast position="top-right" max="5"></smart-toast>
 <smart-modal></smart-modal>
