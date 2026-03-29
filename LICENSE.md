@@ -10,7 +10,7 @@ Change Date:          Four years from the date the Licensed Work is first
 Change License:       MIT License
 
 For information about alternative licensing arrangements for the Licensed Work,
-please contact: ketan [at] your-email.com
+please contact: ketan [at] ketanv288@gmail.com
 
 -----------------------------------------------------------------------------
 
