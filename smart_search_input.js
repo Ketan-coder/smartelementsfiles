@@ -1,937 +1,1021 @@
+/**
+ * smart_search_input.js — v2.0
+ * <smart-search-input> — Async search input with multi-select, pagination,
+ * external param injection, POST support, and full token-based theming.
+ *
+ * ── WHAT'S NEW IN v2 ─────────────────────────────────────────────────────────
+ * • Token system + theme="auto|light|dark" — [data-sc-theme] driven.
+ *   styled="bootstrap" keeps Bootstrap label classes.
+ * • method="GET|POST" — POST sends JSON body; GET appends query params.
+ *   CSRF token auto-detected (cookie → meta → hidden input) for POST.
+ * • params-from="#id1,#id2,.selector" — merges values from external inputs
+ *   (date pickers, selects, smart-inputs) into every request. Watches those
+ *   inputs for change events and re-runs the last search automatically.
+ * • extra-params='{"key":"value"}' — static extra params always sent.
+ * • query-param="q" — the key used for the search term (default: q).
+ * • search-url alias — works identically to data-url, whichever you prefer.
+ * • Style injection into <head> once (not per-instance).
+ * • Phosphor Icons injected once if not already loaded.
+ * • No @media dark mode — all [data-sc-theme] driven.
+ *
+ * ── ATTRIBUTE REFERENCE ──────────────────────────────────────────────────────
+ *   name="field"               hidden input name (default: search-input)
+ *   label="Search"             label text
+ *   placeholder="Search…"      input placeholder
+ *   data-url="/api/search/"    fetch endpoint (alias: search-url)
+ *   search-url="/api/search/"  alias for data-url
+ *   method="GET|POST"          default: GET
+ *   query-param="q"            search term key in request (default: q)
+ *   data-response-path="a.b"   dot-path into JSON response
+ *   multiple                   allow multiple selections
+ *   required                   validation required
+ *   min-chars="1"              minimum chars before search fires
+ *   items-per-page="10"        results per page for infinite scroll
+ *   params-from="#id1,#id2"    CSS selectors of external inputs to merge
+ *   extra-params='{"k":"v"}'   static extra params always included
+ *   styled="default|bootstrap" default: default (self-contained styles)
+ *   theme="auto|light|dark"    default: auto
+ *
+ * ── EVENTS ───────────────────────────────────────────────────────────────────
+ *   ss-change     — fires when selection changes. detail: { selected: [...] }
+ *   ss-search     — fires before each request.  detail: { term, params }
+ *   ss-error      — fires on fetch error.       detail: { error }
+ *
+ * ── STABLE CLASS REFERENCE ───────────────────────────────────────────────────
+ *   .ss-wrapper          outer container
+ *   .ss-label            label element
+ *   .ss-required-star    * required indicator
+ *   .ss-input-container  search input + icon + spinner wrapper
+ *   .ss-input            the text input
+ *   .ss-search-icon      magnifying glass icon
+ *   .ss-spinner          loading spinner
+ *   .ss-selected         selected items container
+ *   .ss-selected-header  count + clear-all row
+ *   .ss-selected-count   "N items selected" text
+ *   .ss-clear-all        clear all button
+ *   .ss-selected-list    flex wrap tag container
+ *   .ss-tag              individual selection chip
+ *   .ss-tag-name         text inside chip
+ *   .ss-tag-remove       × button inside chip
+ *   .ss-dropdown         results dropdown panel
+ *   .ss-results          scrollable results list
+ *   .ss-result-item      single result row
+ *   .ss-result-item--selected  added when item is selected
+ *   .ss-result-icon      circle icon inside result row
+ *   .ss-result-icon--selected  added when selected
+ *   .ss-result-name      primary result text
+ *   .ss-result-desc      secondary result text
+ *   .ss-no-results       "no results" empty state
+ *   .ss-pagination       "scroll for more" footer
+ *   .ss-hidden           display:none utility
+ */
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Style + Phosphor injection — once per page
+// ─────────────────────────────────────────────────────────────────────────────
+
+function injectSearchStyles() {
+    if (document.getElementById('smart-search-input-styles')) return;
+
+    // Phosphor Icons
+    const phLoaded = !!document.querySelector('script[src*="phosphor"]') ||
+                     !!document.querySelector('link[href*="phosphor"]');
+    if (!phLoaded) {
+        const base = 'https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src';
+        [{ id: 'sc-ph-regular', href: `${base}/regular/style.css` },
+         { id: 'sc-ph-fill',    href: `${base}/fill/style.css`    }]
+        .forEach(({ id, href }) => {
+            if (document.getElementById(id)) return;
+            const link = document.createElement('link');
+            link.id = id; link.rel = 'stylesheet'; link.type = 'text/css'; link.href = href;
+            document.head.appendChild(link);
+        });
+    }
+
+    const s = document.createElement('style');
+    s.id = 'smart-search-input-styles';
+    s.textContent = `
+
+        /* ── Host ─────────────────────────────────────────────────────────── */
+        smart-search-input {
+            display: block;
+            font-family: var(--sc-font, system-ui, -apple-system, 'Segoe UI', sans-serif);
+            font-size: var(--sc-font-size, 0.9375rem);
+            color: var(--sc-text, #1a1d23);
+        }
+
+        /* ── Utility ─────────────────────────────────────────────────────── */
+        .ss-hidden { display: none !important; }
+
+        /* ── Label ───────────────────────────────────────────────────────── */
+        .ss-label {
+            display: block;
+            margin-bottom: 0.4rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--sc-text, #374151);
+        }
+        .ss-required-star { color: var(--sc-error, #dc2626); margin-left: 1px; }
+
+        /* ── Input container ─────────────────────────────────────────────── */
+        .ss-input-container {
+            position: relative;
+            width: 100%;
+        }
+        .ss-search-icon {
+            position: absolute;
+            left: 0.75rem; top: 50%;
+            transform: translateY(-50%);
+            color: var(--sc-text-muted, #9ca3af);
+            font-size: 1.1rem;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .ss-input {
+            width: 100%;
+            padding: 0.55rem 2.5rem 0.55rem 2.5rem;
+            font-size: inherit;
+            font-family: inherit;
+            color: var(--sc-text, #1a1d23);
+            background: var(--sc-bg, #ffffff);
+            border: 1.5px solid var(--sc-border, #d1d5db);
+            border-radius: var(--sc-radius, 0.4rem);
+            outline: none;
+            box-sizing: border-box;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .ss-input:focus {
+            border-color: var(--sc-focus, #6366f1);
+            box-shadow:
+                0 0 0 3px var(--sc-focus-ring, rgba(99,102,241,.18)),
+                0 0 8px 1px var(--sc-focus-ring, rgba(99,102,241,.10));
+        }
+        .ss-input::placeholder { color: var(--sc-text-muted, #9ca3af); }
+
+        /* ── Spinner ─────────────────────────────────────────────────────── */
+        .ss-spinner {
+            position: absolute;
+            right: 0.75rem; top: 50%;
+            transform: translateY(-50%);
+            color: var(--sc-text-muted, #9ca3af);
+            font-size: 1.1rem;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        .ss-spinner i { animation: ss-spin 0.9s linear infinite; display: block; }
+        @keyframes ss-spin { to { transform: rotate(360deg); } }
+
+        /* ── Selected items ──────────────────────────────────────────────── */
+        .ss-selected {
+            margin-top: 0.6rem;
+            padding: 0.65rem 0.75rem;
+            background: var(--sc-bg-subtle, #f3f4f6);
+            border: 1.5px solid var(--sc-border, #e5e7eb);
+            border-radius: var(--sc-radius, 0.4rem);
+        }
+        .ss-selected-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.45rem;
+            padding-bottom: 0.45rem;
+            border-bottom: 1px solid var(--sc-border, #e5e7eb);
+        }
+        .ss-selected-count {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--sc-focus, #6366f1);
+        }
+        .ss-clear-all {
+            background: none; border: none;
+            color: var(--sc-error, #dc2626);
+            font-size: 0.8125rem; font-weight: 500;
+            cursor: pointer;
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            display: flex; align-items: center; gap: 0.25rem;
+            font-family: inherit;
+            transition: background 0.15s;
+        }
+        .ss-clear-all:hover { background: rgba(220,38,38,.08); }
+        .ss-selected-list {
+            display: flex; flex-wrap: wrap; gap: 0.4rem;
+        }
+
+        /* ── Selection chip / tag ────────────────────────────────────────── */
+        .ss-tag {
+            display: inline-flex; align-items: center; gap: 0.3rem;
+            padding: 0.25rem 0.5rem;
+            background: var(--sc-tag-bg, #6366f1);
+            color: var(--sc-tag-text, #fff);
+            border-radius: 0.25rem;
+            font-size: 0.8125rem; font-weight: 500;
+            animation: ss-tag-in 0.18s ease;
+        }
+        @keyframes ss-tag-in { from { opacity:0; transform:scale(.85); } to { opacity:1; transform:scale(1); } }
+        .ss-tag-name {
+            max-width: 180px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .ss-tag-remove {
+            background: none; border: none; color: inherit;
+            cursor: pointer; padding: 0; opacity: 0.75;
+            display: flex; align-items: center;
+            transition: opacity 0.15s; font-size: 0.9rem;
+        }
+        .ss-tag-remove:hover { opacity: 1; }
+
+        /* ── Dropdown ────────────────────────────────────────────────────── */
+        .ss-dropdown {
+            position: absolute;
+            top: calc(100% + 4px); left: 0; right: 0;
+            background: var(--sc-bg, #ffffff);
+            border: 1.5px solid var(--sc-border, #d1d5db);
+            border-radius: var(--sc-radius, 0.4rem);
+            box-shadow: var(--sc-shadow-md, 0 8px 24px rgba(0,0,0,.12));
+            z-index: 1050;
+            display: none;
+            animation: ss-dropdown-in 0.18s ease;
+            max-height: 400px;
+        }
+        @keyframes ss-dropdown-in { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+        .ss-dropdown.show { display: block; }
+
+        /* ── Results list ────────────────────────────────────────────────── */
+        .ss-results {
+            max-height: 350px;
+            overflow-y: auto;
+            padding: 0.25rem 0;
+            scroll-behavior: smooth;
+        }
+        /* Scrollbar */
+        .ss-results::-webkit-scrollbar { width: 6px; }
+        .ss-results::-webkit-scrollbar-track { background: var(--sc-bg-subtle, #f3f4f6); border-radius: 3px; }
+        .ss-results::-webkit-scrollbar-thumb { background: var(--sc-border, #d1d5db); border-radius: 3px; }
+        .ss-results::-webkit-scrollbar-thumb:hover { background: var(--sc-text-muted, #9ca3af); }
+
+        /* ── Result item ─────────────────────────────────────────────────── */
+        .ss-result-item {
+            padding: 0.65rem 0.85rem;
+            cursor: pointer;
+            display: flex; align-items: center; gap: 0.65rem;
+            border-bottom: 1px solid var(--sc-bg-subtle, #f3f4f6);
+            transition: background 0.12s;
+            min-height: 48px;
+        }
+        .ss-result-item:last-child { border-bottom: none; }
+        .ss-result-item:hover { background: var(--sc-bg-subtle, #f3f4f6); }
+        .ss-result-item--selected {
+            background: rgba(99,102,241,.06);
+        }
+        .ss-result-icon {
+            flex-shrink: 0;
+            width: 30px; height: 30px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 50%;
+            background: var(--sc-bg-subtle, #f3f4f6);
+            color: var(--sc-text-muted, #9ca3af);
+            font-size: 1.1rem;
+            transition: background 0.18s, color 0.18s;
+        }
+        .ss-result-icon--selected {
+            background: var(--sc-focus, #6366f1);
+            color: #fff;
+        }
+        .ss-result-name {
+            font-size: 0.9rem; font-weight: 500;
+            color: var(--sc-text, #1a1d23);
+            line-height: 1.4;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            text-overflow: ellipsis;
+            word-break: break-word;
+        }
+        .ss-result-desc {
+            font-size: 0.8125rem;
+            color: var(--sc-text-muted, #6b7280);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            margin-top: 0.15rem;
+        }
+
+        /* ── Empty state ─────────────────────────────────────────────────── */
+        .ss-no-results {
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            padding: 2rem 1rem;
+            color: var(--sc-text-muted, #9ca3af);
+            gap: 0.4rem;
+        }
+        .ss-no-results i { font-size: 2.2rem; opacity: 0.5; }
+        .ss-no-results p { margin: 0; font-size: 0.875rem; }
+
+        /* ── Pagination footer ───────────────────────────────────────────── */
+        .ss-pagination {
+            padding: 0.6rem;
+            text-align: center;
+            border-top: 1px solid var(--sc-border, #e5e7eb);
+            background: var(--sc-bg-subtle, #f9fafb);
+            border-radius: 0 0 var(--sc-radius, 0.4rem) var(--sc-radius, 0.4rem);
+            font-size: 0.8125rem;
+            color: var(--sc-focus, #6366f1);
+            font-weight: 500;
+            display: flex; align-items: center; justify-content: center; gap: 0.35rem;
+        }
+        .ss-pagination i { animation: ss-bounce 2s infinite; display: inline-block; }
+        @keyframes ss-bounce { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-4px); } }
+
+        /* ── Dark theme ──────────────────────────────────────────────────── */
+        [data-sc-theme="dark"] smart-search-input .ss-label,
+        smart-search-input[data-sc-theme="dark"] .ss-label { color: var(--sc-text, #e5e7eb); }
+
+        [data-sc-theme="dark"] smart-search-input .ss-input,
+        smart-search-input[data-sc-theme="dark"] .ss-input {
+            background: var(--sc-bg, #1f2937);
+            border-color: var(--sc-border, #4b5563);
+            color: var(--sc-text, #e5e7eb);
+        }
+        [data-sc-theme="dark"] smart-search-input .ss-input::placeholder,
+        smart-search-input[data-sc-theme="dark"] .ss-input::placeholder { color: var(--sc-text-muted, #6b7280); }
+
+        [data-sc-theme="dark"] smart-search-input .ss-selected,
+        smart-search-input[data-sc-theme="dark"] .ss-selected {
+            background: var(--sc-bg-subtle, #374151);
+            border-color: var(--sc-border, #4b5563);
+        }
+        [data-sc-theme="dark"] smart-search-input .ss-selected-header,
+        smart-search-input[data-sc-theme="dark"] .ss-selected-header { border-color: var(--sc-border, #4b5563); }
+
+        [data-sc-theme="dark"] smart-search-input .ss-dropdown,
+        smart-search-input[data-sc-theme="dark"] .ss-dropdown {
+            background: var(--sc-bg, #1f2937);
+            border-color: var(--sc-border, #4b5563);
+            box-shadow: 0 8px 24px rgba(0,0,0,.4);
+        }
+        [data-sc-theme="dark"] smart-search-input .ss-result-item,
+        smart-search-input[data-sc-theme="dark"] .ss-result-item { border-color: var(--sc-bg-subtle, #374151); }
+
+        [data-sc-theme="dark"] smart-search-input .ss-result-item:hover,
+        smart-search-input[data-sc-theme="dark"] .ss-result-item:hover { background: var(--sc-bg-subtle, #374151); }
+
+        [data-sc-theme="dark"] smart-search-input .ss-result-name,
+        smart-search-input[data-sc-theme="dark"] .ss-result-name { color: var(--sc-text, #e5e7eb); }
+
+        [data-sc-theme="dark"] smart-search-input .ss-result-icon,
+        smart-search-input[data-sc-theme="dark"] .ss-result-icon {
+            background: var(--sc-bg-subtle, #374151);
+            color: var(--sc-text-muted, #9ca3af);
+        }
+        [data-sc-theme="dark"] smart-search-input .ss-no-results,
+        smart-search-input[data-sc-theme="dark"] .ss-no-results { color: var(--sc-text-muted, #9ca3af); }
+
+        [data-sc-theme="dark"] smart-search-input .ss-pagination,
+        smart-search-input[data-sc-theme="dark"] .ss-pagination {
+            background: var(--sc-bg-subtle, #374151);
+            border-color: var(--sc-border, #4b5563);
+        }
+        [data-sc-theme="dark"] smart-search-input .ss-results::-webkit-scrollbar-track,
+        smart-search-input[data-sc-theme="dark"] .ss-results::-webkit-scrollbar-track { background: var(--sc-bg, #1f2937); }
+        [data-sc-theme="dark"] smart-search-input .ss-results::-webkit-scrollbar-thumb,
+        smart-search-input[data-sc-theme="dark"] .ss-results::-webkit-scrollbar-thumb { background: var(--sc-border, #4b5563); }
+
+        /* ── Mobile ──────────────────────────────────────────────────────── */
+        @media (max-width: 768px) {
+            .ss-input { font-size: 16px; } /* prevents iOS zoom */
+            .ss-result-item { min-height: 56px; }
+            .ss-dropdown { max-height: 70vh; }
+            .ss-results { max-height: calc(70vh - 60px); }
+        }
+    `;
+    document.head.appendChild(s);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  <smart-search-input>
+// ═════════════════════════════════════════════════════════════════════════════
+
 class SmartSearchInput extends HTMLElement {
+
+    // ── Theme (SmartElement delegation pattern) ──────────────────────────────
+
+    _getMode() {
+        if (window.SmartElement) return SmartElement.prototype._getMode.call(this);
+        const s = (this.getAttribute('styled') || '').toLowerCase().trim();
+        return s === 'bootstrap' ? 'bootstrap' : 'default';
+    }
+
+    _getTheme() {
+        if (window.SmartElement) return SmartElement.prototype._getTheme.call(this);
+        if (this._getMode() !== 'default') return null;
+        const t = (this.getAttribute('theme') || 'auto').toLowerCase().trim();
+        return ['light', 'dark', 'auto'].includes(t) ? t : 'auto';
+    }
+
+    _applyTheme() {
+        if (window.SmartElement) return SmartElement.prototype._applyTheme.call(this);
+        if (this._getMode() !== 'default') return;
+
+        if (this._scMqlHandler) {
+            this._scMql?.removeEventListener('change', this._scMqlHandler);
+            this._scMqlHandler = null; this._scMql = null;
+        }
+        if (this._scObserver) { this._scObserver.disconnect(); this._scObserver = null; }
+
+        const theme = this._getTheme();
+        if (theme === 'light' || theme === 'dark') { this.dataset.scTheme = theme; return; }
+
+        const _resolve = () => {
+            const ancestor = this.closest('[data-sc-theme]');
+            if (ancestor && ancestor !== this) return ancestor.dataset.scTheme || 'light';
+            if (this._scMql) return this._scMql.matches ? 'dark' : 'light';
+            return 'light';
+        };
+        const _apply = () => { this.dataset.scTheme = _resolve(); };
+
+        const targets = [document.body, document.documentElement].filter(Boolean);
+        this._scObserver = new MutationObserver(_apply);
+        targets.forEach(t => this._scObserver.observe(t, { attributes: true, attributeFilter: ['data-sc-theme'] }));
+
+        this._scMql = window.matchMedia('(prefers-color-scheme: dark)');
+        this._scMqlHandler = _apply;
+        this._scMql.addEventListener('change', this._scMqlHandler);
+        _apply();
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
     connectedCallback() {
-        const name = this.getAttribute('name') || 'search-input';
-        const label = this.getAttribute('label') || 'Search';
-        const placeholder = this.getAttribute('placeholder') || 'Search...';
-        const fetchUrl = this.getAttribute('data-url') || '';
+        injectSearchStyles();
+        this._applyTheme();
+
+        const name         = this.getAttribute('name')              || 'search-input';
+        const label        = this.getAttribute('label')             || 'Search';
+        const placeholder  = this.getAttribute('placeholder')       || 'Type to search…';
+        const required     = this.hasAttribute('required');
+        const multiple     = this.hasAttribute('multiple');
+        const minChars     = parseInt(this.getAttribute('min-chars')     || '1', 10);
+        const itemsPerPage = parseInt(this.getAttribute('items-per-page') || '10', 10);
+        const method       = (this.getAttribute('method') || 'GET').toUpperCase();
+        const queryParam   = this.getAttribute('query-param')       || 'q';
         const responsePath = this.getAttribute('data-response-path') || '';
-        const multiple = this.hasAttribute('multiple');
-        const required = this.hasAttribute('required');
-        const minChars = parseInt(this.getAttribute('min-chars')) || 1; // Changed from 2 to 1
-        const itemsPerPage = parseInt(this.getAttribute('items-per-page')) || 10;
-        
-        // State management
-        this.state = {
-            allResults: [],
+        const paramsFrom   = this.getAttribute('params-from')       || '';
+        const mode         = this._getMode();
+
+        // data-url and search-url are identical — use whichever
+        const fetchUrl = this.getAttribute('data-url') ||
+                         this.getAttribute('search-url') || '';
+
+        // Static extra params
+        let extraParams = {};
+        try {
+            const raw = this.getAttribute('extra-params') || '{}';
+            extraParams = JSON.parse(raw);
+        } catch { console.warn('[smart-search-input] Invalid extra-params JSON'); }
+
+        // State
+        this._state = {
+            allResults:    [],
             filteredResults: [],
             selectedItems: new Map(),
-            currentPage: 1,
-            itemsPerPage: itemsPerPage,
-            isLoading: false,
-            searchTerm: ''
+            currentPage:   1,
+            itemsPerPage,
+            isLoading:     false,
+            searchTerm:    '',
+            lastTerm:      '',
         };
 
+        this._config = {
+            fetchUrl, method, queryParam, responsePath,
+            multiple, minChars, extraParams, paramsFrom,
+            name,
+        };
+
+        // Label class respects styled= mode
+        const labelCl = mode === 'bootstrap' ? 'form-label ss-label' : 'ss-label';
+
         this.innerHTML = `
-            <div class=\"smart-search-wrapper\">
-                <label class=\"smart-search-label\">${label}${required ? '<span class=\"text-danger\"> *</span>' : ''}</label>
-                
-                <div class=\"smart-search-input-container\">
-                    <i class=\"ph ph-magnifying-glass search-icon\"></i>
-                    <input 
-                        type=\"text\" 
-                        class=\"smart-search-input\" 
-                        placeholder=\"${placeholder}\"
-                        autocomplete=\"off\"
-                        autocorrect=\"off\"
-                        autocapitalize=\"off\"
-                        spellcheck=\"false\"
+            <div class="ss-wrapper" style="position:relative;">
+                <label class="${labelCl}">
+                    ${label}${required ? '<span class="ss-required-star"> * </span>' : ''}
+                </label>
+                <div class="ss-input-container">
+                    <i class="ph ph-magnifying-glass ss-search-icon"></i>
+                    <input
+                        type="text"
+                        class="ss-input"
+                        placeholder="${this._esc(placeholder)}"
+                        autocomplete="off" autocorrect="off"
+                        autocapitalize="off" spellcheck="false"
                     />
-                    <div class=\"search-spinner\" style=\"display: none;\">
-                        <i class=\"ph ph-circle-notch spin-animation\"></i>
+                    <div class="ss-spinner">
+                        <i class="ph ph-circle-notch"></i>
                     </div>
                 </div>
 
-                <!-- Selected Items (hidden by default) -->
-                <div class=\"smart-search-selected-items\" style=\"display: none;\">
-                    <div class=\"selected-items-header\">
-                        <span class=\"selected-count\">0 items selected</span>
-                        <button type=\"button\" class=\"clear-all-btn\">
-                            <i class=\"ph ph-x\"></i> Clear all
+                <div class="ss-selected ss-hidden">
+                    <div class="ss-selected-header">
+                        <span class="ss-selected-count">0 selected</span>
+                        <button type="button" class="ss-clear-all">
+                            <i class="ph ph-x"></i> Clear all
                         </button>
                     </div>
-                    <div class=\"selected-items-list\"></div>
+                    <div class="ss-selected-list"></div>
                 </div>
 
-                <!-- Dropdown Results -->
-                <div class=\"smart-search-dropdown\" style=\"display: none;\">
-                    <div class=\"smart-search-results\"></div>
-                    <div class=\"smart-search-no-results\" style=\"display: none;\">
-                        <i class=\"ph ph-magnifying-glass\"></i>
+                <div class="ss-dropdown">
+                    <div class="ss-results"></div>
+                    <div class="ss-no-results ss-hidden">
+                        <i class="ph ph-magnifying-glass"></i>
                         <p>No results found</p>
                     </div>
-                    <div class=\"smart-search-pagination\" style=\"display: none;\">
-                        <button type=\"button\" class=\"pagination-info\">
-                            <i class=\"ph ph-arrows-down-up\"></i> Scroll for more
-                        </button>
+                    <div class="ss-pagination ss-hidden">
+                        <i class="ph ph-arrows-down-up"></i> Scroll for more
                     </div>
                 </div>
 
-                <!-- Hidden input for form submission -->
-                <input type=\"hidden\" name=\"${name}\" class=\"smart-search-hidden-input\" />
+                <input type="hidden" name="${this._esc(name)}" class="ss-hidden-input" />
             </div>
         `;
 
-        // Store references
-        this.elements = {
-            input: this.querySelector('.smart-search-input'),
-            dropdown: this.querySelector('.smart-search-dropdown'),
-            results: this.querySelector('.smart-search-results'),
-            noResults: this.querySelector('.smart-search-no-results'),
-            spinner: this.querySelector('.search-spinner'),
-            selectedContainer: this.querySelector('.smart-search-selected-items'),
-            selectedList: this.querySelector('.selected-items-list'),
-            selectedCount: this.querySelector('.selected-count'),
-            clearAllBtn: this.querySelector('.clear-all-btn'),
-            hiddenInput: this.querySelector('.smart-search-hidden-input'),
-            pagination: this.querySelector('.smart-search-pagination')
+        // Element refs
+        this._el = {
+            input:      this.querySelector('.ss-input'),
+            dropdown:   this.querySelector('.ss-dropdown'),
+            results:    this.querySelector('.ss-results'),
+            noResults:  this.querySelector('.ss-no-results'),
+            spinner:    this.querySelector('.ss-spinner'),
+            selected:   this.querySelector('.ss-selected'),
+            selList:    this.querySelector('.ss-selected-list'),
+            selCount:   this.querySelector('.ss-selected-count'),
+            clearAll:   this.querySelector('.ss-clear-all'),
+            hidden:     this.querySelector('.ss-hidden-input'),
+            pagination: this.querySelector('.ss-pagination'),
         };
 
-        this.config = {
-            fetchUrl,
-            responsePath,
-            multiple,
-            minChars
-        };
+        this._setupEvents();
+        this._setupInfiniteScroll();
+        this._setupExternalParams(paramsFrom);
 
-        // Event listeners
-        this.setupEventListeners();
-        
-        // Infinite scroll setup
-        this.setupInfiniteScroll();
-
-        // Add styles
-        this.addStyles();
-
-        // Close dropdown when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!this.contains(e.target)) {
-                this.closeDropdown();
-            }
+        document.addEventListener('click', this._outsideClick = (e) => {
+            if (!this.contains(e.target)) this._closeDropdown();
         });
     }
 
-    setupEventListeners() {
-        // Search input
-        let debounceTimer;
-        this.elements.input.addEventListener('input', (e) => {
-            clearTimeout(debounceTimer);
-            const term = e.target.value.trim();
-            this.state.searchTerm = term;
+    disconnectedCallback() {
+        document.removeEventListener('click', this._outsideClick);
+        if (this._scMqlHandler) {
+            this._scMql?.removeEventListener('change', this._scMqlHandler);
+        }
+        if (this._scObserver) this._scObserver.disconnect();
+        this._externalCleanup?.forEach(fn => fn());
+    }
 
-            if (term.length >= this.config.minChars) {
-                debounceTimer = setTimeout(() => {
-                    this.performSearch(term);
-                }, 300);
-            } else {
-                this.closeDropdown();
-            }
-        });
+    // ── External param sources ───────────────────────────────────────────────
 
-        // Focus input
-        this.elements.input.addEventListener('focus', () => {
-            if (this.state.searchTerm.length >= this.config.minChars) {
-                this.openDropdown();
-            }
-        });
+    /**
+     * Watches external inputs (date pickers, selects, smart-inputs) whose
+     * values should be merged into every request.
+     * paramsFrom is a comma-separated list of CSS selectors.
+     */
+    _setupExternalParams(paramsFrom) {
+        if (!paramsFrom) return;
+        this._externalCleanup = [];
 
-        // Clear all button
-        this.elements.clearAllBtn.addEventListener('click', () => {
-            this.clearAllSelections();
+        const selectors = paramsFrom.split(',').map(s => s.trim()).filter(Boolean);
+
+        selectors.forEach(selector => {
+            const els = document.querySelectorAll(selector);
+            els.forEach(el => {
+                const handler = () => {
+                    // Re-run the last search with updated params
+                    if (this._state.lastTerm.length >= this._config.minChars) {
+                        this._performSearch(this._state.lastTerm);
+                    }
+                };
+                // smart-input fires 'change' on its hidden input; native inputs fire 'change' or 'input'
+                el.addEventListener('change', handler);
+                el.addEventListener('input',  handler);
+                // Also listen on smart-input's hidden input
+                const hidden = el.querySelector ? el.querySelector('input[type="hidden"]') : null;
+                if (hidden) hidden.addEventListener('change', handler);
+
+                this._externalCleanup.push(() => {
+                    el.removeEventListener('change', handler);
+                    el.removeEventListener('input',  handler);
+                    if (hidden) hidden.removeEventListener('change', handler);
+                });
+            });
         });
     }
 
-    setupInfiniteScroll() {
-        this.elements.results.addEventListener('scroll', () => {
-            const { scrollTop, scrollHeight, clientHeight } = this.elements.results;
-            
-            // Check if scrolled to bottom (with 50px threshold)
-            if (scrollTop + clientHeight >= scrollHeight - 50) {
-                this.loadMoreResults();
-            }
+    /**
+     * Collects current values from external param sources.
+     * Returns a plain object { fieldname: value }.
+     */
+    _collectExternalParams() {
+        const params = {};
+        if (!this._config.paramsFrom) return params;
+
+        const selectors = this._config.paramsFrom.split(',').map(s => s.trim()).filter(Boolean);
+        selectors.forEach(selector => {
+            const els = document.querySelectorAll(selector);
+            els.forEach(el => {
+                // smart-search-input
+                if (el.tagName === 'SMART-SEARCH-INPUT') {
+                    const ids = el.getSelectedIds();
+                    const name = el.getAttribute('name');
+                    if (name && ids.length) params[name] = ids.join(',');
+                    return;
+                }
+                // smart-input — read hidden input
+                if (el.tagName === 'SMART-INPUT') {
+                    const hidden = el.querySelector('input[type="hidden"], input:not([type="text"]):not([type="search"])');
+                    const name   = el.getAttribute('name');
+                    if (name && hidden?.value) params[name] = hidden.value;
+                    else if (name && el.value) params[name] = el.value;
+                    return;
+                }
+                // Native inputs, selects, textareas
+                const name = el.getAttribute('name') || el.id;
+                if (name && el.value) params[name] = el.value;
+            });
         });
+        return params;
     }
 
-    async performSearch(term) {
-        if (!this.config.fetchUrl) {
-            console.warn('No data-url provided for smart-search-input');
+    // ── Fetch ────────────────────────────────────────────────────────────────
+
+    async _performSearch(term) {
+        if (!this._config.fetchUrl) {
+            console.warn('[smart-search-input] No data-url or search-url provided.');
             return;
         }
 
-        this.state.isLoading = true;
-        this.showSpinner();
+        this._state.isLoading = true;
+        this._state.lastTerm  = term;
+        this._el.spinner.style.display = 'flex';
+
+        // Merge: extra-params + external params + search term
+        const mergedParams = {
+            ...this._config.extraParams,
+            ...this._collectExternalParams(),
+            [this._config.queryParam]: term,
+        };
+
+        this.dispatchEvent(new CustomEvent('ss-search', {
+            bubbles: true,
+            detail: { term, params: mergedParams },
+        }));
 
         try {
-            const response = await fetch(`${this.config.fetchUrl}?q=${encodeURIComponent(term)}`);
-            const data = await response.json();
-            
-            // Extract data from nested path if specified
-            const results = this.config.responsePath 
-                ? this.extractDataFromPath(data, this.config.responsePath) 
+            let response;
+
+            if (this._config.method === 'POST') {
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                };
+                const csrf = this._getCsrfToken();
+                if (csrf) headers['X-CSRFToken'] = csrf;
+
+                response = await fetch(this._config.fetchUrl, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(mergedParams),
+                });
+            } else {
+                // GET — append as query string
+                const qs  = new URLSearchParams(mergedParams).toString();
+                const url = this._config.fetchUrl.includes('?')
+                    ? `${this._config.fetchUrl}&${qs}`
+                    : `${this._config.fetchUrl}?${qs}`;
+
+                response = await fetch(url, {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                });
+            }
+
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const data    = await response.json();
+            const results = this._config.responsePath
+                ? this._extractPath(data, this._config.responsePath)
                 : data;
 
             if (Array.isArray(results)) {
-                this.state.allResults = results;
-                this.state.filteredResults = results;
-                this.state.currentPage = 1;
-                this.renderResults();
+                this._state.allResults      = results;
+                this._state.filteredResults = results;
+                this._state.currentPage     = 1;
+                this._renderResults();
             } else {
-                console.warn('Search results is not an array:', results);
-                this.showNoResults();
+                console.warn('[smart-search-input] Response is not an array:', results);
+                this._showEmpty();
             }
-        } catch (error) {
-            console.error('Search error:', error);
-            this.showNoResults();
+
+        } catch (err) {
+            console.error('[smart-search-input] Fetch error:', err);
+            this._showEmpty();
+            this.dispatchEvent(new CustomEvent('ss-error', { bubbles: true, detail: { error: err } }));
         } finally {
-            this.state.isLoading = false;
-            this.hideSpinner();
+            this._state.isLoading = false;
+            this._el.spinner.style.display = 'none';
         }
     }
 
-    renderResults() {
-        const startIndex = 0;
-        const endIndex = this.state.currentPage * this.state.itemsPerPage;
-        const paginatedResults = this.state.filteredResults.slice(startIndex, endIndex);
+    _getCsrfToken() {
+        // Django: cookie → meta → hidden input
+        const cookie = document.cookie.split(';')
+            .map(c => c.trim())
+            .find(c => c.startsWith('csrftoken='));
+        if (cookie) return cookie.split('=')[1];
 
-        if (paginatedResults.length === 0) {
-            this.showNoResults();
-            return;
-        }
+        const meta = document.querySelector('meta[name="csrf-token"], meta[name="csrf_token"]');
+        if (meta) return meta.getAttribute('content');
 
-        this.elements.results.innerHTML = '';
-        this.elements.noResults.style.display = 'none';
+        const input = document.querySelector('input[name="csrfmiddlewaretoken"]');
+        if (input) return input.value;
 
-        paginatedResults.forEach(item => {
-            const resultItem = this.createResultItem(item);
-            this.elements.results.appendChild(resultItem);
+        return null;
+    }
+
+    _extractPath(obj, path) {
+        return path.split('.').reduce((acc, key) => {
+            if (acc && typeof acc === 'object' && key in acc) return acc[key];
+            console.warn(`[smart-search-input] Path '${path}' not found in response`);
+            return null;
+        }, obj);
+    }
+
+    // ── Render ───────────────────────────────────────────────────────────────
+
+    _renderResults() {
+        const end        = this._state.currentPage * this._state.itemsPerPage;
+        const pageSlice  = this._state.filteredResults.slice(0, end);
+
+        if (!pageSlice.length) { this._showEmpty(); return; }
+
+        this._el.results.innerHTML = '';
+        this._el.noResults.classList.add('ss-hidden');
+
+        pageSlice.forEach(item => {
+            this._el.results.appendChild(this._buildResultItem(item));
         });
 
-        // Show pagination indicator if there are more results
-        if (endIndex < this.state.filteredResults.length) {
-            this.elements.pagination.style.display = 'block';
+        // Pagination indicator
+        if (end < this._state.filteredResults.length) {
+            this._el.pagination.classList.remove('ss-hidden');
         } else {
-            this.elements.pagination.style.display = 'none';
+            this._el.pagination.classList.add('ss-hidden');
         }
 
-        this.openDropdown();
+        this._openDropdown();
     }
 
-    loadMoreResults() {
-        const totalPages = Math.ceil(this.state.filteredResults.length / this.state.itemsPerPage);
-        
-        if (this.state.currentPage < totalPages && !this.state.isLoading) {
-            this.state.currentPage++;
-            
-            const startIndex = (this.state.currentPage - 1) * this.state.itemsPerPage;
-            const endIndex = this.state.currentPage * this.state.itemsPerPage;
-            const newResults = this.state.filteredResults.slice(startIndex, endIndex);
+    _buildResultItem(item) {
+        const id         = item.id ?? item.value ?? item.name;
+        const label      = item.name || item.title || item.label || String(id);
+        const desc       = item.description || item.subtitle || item.desc || '';
+        const isSelected = this._state.selectedItems.has(String(id));
 
-            newResults.forEach(item => {
-                const resultItem = this.createResultItem(item);
-                this.elements.results.appendChild(resultItem);
-            });
-
-            // Hide pagination if no more results
-            if (endIndex >= this.state.filteredResults.length) {
-                this.elements.pagination.style.display = 'none';
-            }
-        }
-    }
-
-    createResultItem(item) {
-        const div = document.createElement('div');
-        div.className = 'search-result-item';
-        
-        const isSelected = this.state.selectedItems.has(item.id);
-        if (isSelected) {
-            div.classList.add('selected');
-        }
-
-        div.innerHTML = `
-            <div class=\"result-item-content\">
-                <div class=\"result-item-icon ${isSelected ? 'selected' : ''}\">
-                    <i class=\"ph ${isSelected ? 'ph-check-circle' : 'ph-plus-circle'}\"></i>
-                </div>
-                <div class=\"result-item-text\">
-                    <div class=\"result-item-name\">${item.name || item.title || 'Unnamed'}</div>
-                    ${item.description ? `<div class=\"result-item-description\">${item.description}</div>` : ''}
-                </div>
+        const el = document.createElement('div');
+        el.className = `ss-result-item${isSelected ? ' ss-result-item--selected' : ''}`;
+        el.innerHTML = `
+            <div class="ss-result-icon${isSelected ? ' ss-result-icon--selected' : ''}">
+                <i class="ph ${isSelected ? 'ph-check-circle' : 'ph-plus-circle'}"></i>
+            </div>
+            <div style="flex:1;min-width:0;">
+                <div class="ss-result-name">${this._esc(label)}</div>
+                ${desc ? `<div class="ss-result-desc">${this._esc(desc)}</div>` : ''}
             </div>
         `;
 
-        div.addEventListener('click', () => {
-            this.toggleSelection(item, div);
-        });
-
-        return div;
+        el.addEventListener('click', () => this._toggleItem(item, el));
+        return el;
     }
 
-    toggleSelection(item, element) {
-        if (this.state.selectedItems.has(item.id)) {
-            // Deselect
-            this.state.selectedItems.delete(item.id);
-            element.classList.remove('selected');
-            element.querySelector('.result-item-icon').classList.remove('selected');
-            element.querySelector('.result-item-icon i').className = 'ph ph-plus-circle';
+    _showEmpty() {
+        this._el.results.innerHTML = '';
+        this._el.noResults.classList.remove('ss-hidden');
+        this._el.pagination.classList.add('ss-hidden');
+        this._openDropdown();
+    }
+
+    // ── Infinite scroll ──────────────────────────────────────────────────────
+
+    _setupInfiniteScroll() {
+        this._el.results.addEventListener('scroll', () => {
+            const { scrollTop, scrollHeight, clientHeight } = this._el.results;
+            if (scrollTop + clientHeight >= scrollHeight - 50) {
+                this._loadMore();
+            }
+        });
+    }
+
+    _loadMore() {
+        const total = this._state.filteredResults.length;
+        const pages = Math.ceil(total / this._state.itemsPerPage);
+
+        if (this._state.currentPage < pages && !this._state.isLoading) {
+            this._state.currentPage++;
+            const start = (this._state.currentPage - 1) * this._state.itemsPerPage;
+            const end   = this._state.currentPage * this._state.itemsPerPage;
+
+            this._state.filteredResults.slice(start, end).forEach(item => {
+                this._el.results.appendChild(this._buildResultItem(item));
+            });
+
+            if (end >= total) this._el.pagination.classList.add('ss-hidden');
+        }
+    }
+
+    // ── Selection ────────────────────────────────────────────────────────────
+
+    _toggleItem(item, el) {
+        const id = String(item.id ?? item.value ?? item.name);
+
+        if (this._state.selectedItems.has(id)) {
+            this._state.selectedItems.delete(id);
         } else {
-            // Select
-            if (!this.config.multiple) {
-                // Clear previous selections if not multiple
-                this.state.selectedItems.clear();
-                this.elements.results.querySelectorAll('.search-result-item').forEach(el => {
-                    el.classList.remove('selected');
-                    el.querySelector('.result-item-icon').classList.remove('selected');
-                    el.querySelector('.result-item-icon i').className = 'ph ph-plus-circle';
+            if (!this._config.multiple) {
+                this._state.selectedItems.clear();
+                // Reset all visible result items
+                this._el.results.querySelectorAll('.ss-result-item').forEach(r => {
+                    r.classList.remove('ss-result-item--selected');
+                    const icon = r.querySelector('.ss-result-icon');
+                    const i    = r.querySelector('i');
+                    if (icon) icon.classList.remove('ss-result-icon--selected');
+                    if (i)    i.className = 'ph ph-plus-circle';
                 });
             }
-            
-            this.state.selectedItems.set(item.id, item);
-            element.classList.add('selected');
-            element.querySelector('.result-item-icon').classList.add('selected');
-            element.querySelector('.result-item-icon i').className = 'ph ph-check-circle';
+            this._state.selectedItems.set(id, item);
         }
 
-        this.updateSelectedItemsDisplay();
-        this.updateHiddenInput();
+        // Update the clicked item's appearance
+        const isNowSelected = this._state.selectedItems.has(id);
+        el.classList.toggle('ss-result-item--selected', isNowSelected);
+        const icon = el.querySelector('.ss-result-icon');
+        const i    = el.querySelector('i');
+        if (icon) icon.classList.toggle('ss-result-icon--selected', isNowSelected);
+        if (i)    i.className = `ph ${isNowSelected ? 'ph-check-circle' : 'ph-plus-circle'}`;
 
-        // Close dropdown if single selection
-        if (!this.config.multiple) {
-            this.closeDropdown();
-            this.elements.input.value = item.name || item.title || '';
+        this._updateSelectionDisplay();
+        this._updateHiddenInput();
+
+        // Single select: close + fill input
+        if (!this._config.multiple) {
+            this._closeDropdown();
+            const label = item.name || item.title || item.label || '';
+            this._el.input.value = isNowSelected ? label : '';
         }
     }
 
-    updateSelectedItemsDisplay() {
-        const count = this.state.selectedItems.size;
+    _removeSelection(id) {
+        this._state.selectedItems.delete(id);
+
+        // Also update any visible result item
+        this._el.results.querySelectorAll('.ss-result-item').forEach(el => {
+            const nameEl = el.querySelector('.ss-result-name');
+            const item   = this._state.filteredResults.find(r => String(r.id ?? r.value ?? r.name) === id);
+            if (!item) return;
+            const elLabel = nameEl?.textContent?.trim();
+            const itLabel = item.name || item.title || '';
+            if (elLabel === itLabel) {
+                el.classList.remove('ss-result-item--selected');
+                const icon = el.querySelector('.ss-result-icon');
+                const i    = el.querySelector('i');
+                if (icon) icon.classList.remove('ss-result-icon--selected');
+                if (i)    i.className = 'ph ph-plus-circle';
+            }
+        });
+
+        this._updateSelectionDisplay();
+        this._updateHiddenInput();
+    }
+
+    _updateSelectionDisplay() {
+        const count = this._state.selectedItems.size;
 
         if (count === 0) {
-            // Hide the selected items container when empty
-            this.elements.selectedContainer.style.display = 'none';
+            this._el.selected.classList.add('ss-hidden');
             return;
         }
 
-        // Show the selected items container
-        this.elements.selectedContainer.style.display = 'block';
-        this.elements.selectedCount.textContent = `${count} item${count !== 1 ? 's' : ''} selected`;
-        
-        this.elements.selectedList.innerHTML = '';
-        
-        this.state.selectedItems.forEach((item, id) => {
-            const tag = document.createElement('div');
-            tag.className = 'selected-tag';
+        this._el.selected.classList.remove('ss-hidden');
+        this._el.selCount.textContent = `${count} item${count !== 1 ? 's' : ''} selected`;
+        this._el.selList.innerHTML    = '';
+
+        this._state.selectedItems.forEach((item, id) => {
+            const label = item.name || item.title || item.label || id;
+            const tag   = document.createElement('div');
+            tag.className = 'ss-tag';
             tag.innerHTML = `
-                <span class=\"selected-tag-name\">${item.name || item.title || 'Unnamed'}</span>
-                <button type=\"button\" class=\"selected-tag-remove\">
-                    <i class=\"ph ph-x\"></i>
+                <span class="ss-tag-name">${this._esc(label)}</span>
+                <button type="button" class="ss-tag-remove" aria-label="Remove ${this._esc(label)}">
+                    <i class="ph ph-x"></i>
                 </button>
             `;
-
-            const removeBtn = tag.querySelector('.selected-tag-remove');
-            removeBtn.addEventListener('click', (e) => {
+            tag.querySelector('.ss-tag-remove').addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.removeSelection(id);
+                this._removeSelection(id);
             });
-
-            this.elements.selectedList.appendChild(tag);
+            this._el.selList.appendChild(tag);
         });
     }
 
-    removeSelection(id) {
-        this.state.selectedItems.delete(id);
-        
-        // Update the result item if visible
-        const resultItems = this.elements.results.querySelectorAll('.search-result-item');
-        resultItems.forEach(item => {
-            const itemData = this.state.filteredResults.find(r => r.id === id);
-            if (itemData) {
-                item.classList.remove('selected');
-                item.querySelector('.result-item-icon').classList.remove('selected');
-                item.querySelector('.result-item-icon i').className = 'ph ph-plus-circle';
-            }
-        });
-
-        this.updateSelectedItemsDisplay();
-        this.updateHiddenInput();
+    _updateHiddenInput() {
+        this._el.hidden.value = Array.from(this._state.selectedItems.keys()).join(',');
+        this._el.hidden.dispatchEvent(new Event('change', { bubbles: true }));
+        this.dispatchEvent(new CustomEvent('ss-change', {
+            bubbles: true,
+            detail: { selected: this.getSelectedItems() },
+        }));
     }
 
-    clearAllSelections() {
-        this.state.selectedItems.clear();
-        
-        // Update all result items
-        this.elements.results.querySelectorAll('.search-result-item').forEach(item => {
-            item.classList.remove('selected');
-            item.querySelector('.result-item-icon').classList.remove('selected');
-            item.querySelector('.result-item-icon i').className = 'ph ph-plus-circle';
-        });
+    // ── Events setup ─────────────────────────────────────────────────────────
 
-        this.updateSelectedItemsDisplay();
-        this.updateHiddenInput();
-        this.elements.input.value = '';
-    }
+    _setupEvents() {
+        let debounce;
 
-    updateHiddenInput() {
-        const values = Array.from(this.state.selectedItems.keys()).join(',');
-        this.elements.hiddenInput.value = values;
-        
-        // Dispatch change event
-        this.elements.hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+        this._el.input.addEventListener('input', (e) => {
+            clearTimeout(debounce);
+            const term = e.target.value.trim();
+            this._state.searchTerm = term;
 
-    extractDataFromPath(response, path) {
-        if (!path) return response;
-        
-        const keys = path.split('.');
-        let data = response;
-        
-        for (let key of keys) {
-            if (data && typeof data === 'object' && key in data) {
-                data = data[key];
+            if (term.length >= this._config.minChars) {
+                debounce = setTimeout(() => this._performSearch(term), 300);
             } else {
-                console.warn(`Path '${path}' not found in response`);
-                return null;
+                this._closeDropdown();
             }
-        }
-        
-        return data;
+        });
+
+        this._el.input.addEventListener('focus', () => {
+            if (this._state.searchTerm.length >= this._config.minChars) {
+                this._openDropdown();
+            }
+        });
+
+        this._el.clearAll.addEventListener('click', () => {
+            this._state.selectedItems.clear();
+            this._el.results.querySelectorAll('.ss-result-item').forEach(el => {
+                el.classList.remove('ss-result-item--selected');
+                const icon = el.querySelector('.ss-result-icon');
+                const i    = el.querySelector('i');
+                if (icon) icon.classList.remove('ss-result-icon--selected');
+                if (i)    i.className = 'ph ph-plus-circle';
+            });
+            this._updateSelectionDisplay();
+            this._updateHiddenInput();
+            this._el.input.value = '';
+        });
     }
 
-    showSpinner() {
-        this.elements.spinner.style.display = 'flex';
-    }
+    _openDropdown()  { this._el.dropdown.classList.add('show'); }
+    _closeDropdown() { this._el.dropdown.classList.remove('show'); }
 
-    hideSpinner() {
-        this.elements.spinner.style.display = 'none';
-    }
+    // ── Public API ───────────────────────────────────────────────────────────
 
-    showNoResults() {
-        this.elements.results.innerHTML = '';
-        this.elements.noResults.style.display = 'flex';
-        this.elements.pagination.style.display = 'none';
-        this.openDropdown();
-    }
-
-    openDropdown() {
-        this.elements.dropdown.style.display = 'block';
-    }
-
-    closeDropdown() {
-        this.elements.dropdown.style.display = 'none';
-    }
-
-    // Public API
-    getSelectedItems() {
-        return Array.from(this.state.selectedItems.values());
-    }
-
-    getSelectedIds() {
-        return Array.from(this.state.selectedItems.keys());
-    }
+    getSelectedItems() { return Array.from(this._state.selectedItems.values()); }
+    getSelectedIds()   { return Array.from(this._state.selectedItems.keys()); }
 
     setSelectedItems(items) {
-        this.state.selectedItems.clear();
+        this._state.selectedItems.clear();
         items.forEach(item => {
-            this.state.selectedItems.set(item.id, item);
+            this._state.selectedItems.set(String(item.id ?? item.value ?? item.name), item);
         });
-        this.updateSelectedItemsDisplay();
-        this.updateHiddenInput();
+        this._updateSelectionDisplay();
+        this._updateHiddenInput();
     }
 
-    addStyles() {
-        const style = document.createElement('style');
-        style.textContent = `
-            /* Base Styles */
-            .smart-search-wrapper {
-                position: relative;
-                width: 100%;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            }
-
-            .smart-search-label {
-                display: block;
-                margin-bottom: 0.5rem;
-                font-weight: 500;
-                font-size: 0.875rem;
-                color: #212529;
-            }
-
-            .smart-search-input-container {
-                position: relative;
-                width: 100%;
-            }
-
-            .search-icon {
-                position: absolute;
-                left: 0.75rem;
-                top: 50%;
-                transform: translateY(-50%);
-                color: #6c757d;
-                font-size: 1.125rem;
-                pointer-events: none;
-                z-index: 1;
-            }
-
-            .smart-search-input {
-                width: 100%;
-                padding: 0.625rem 2.5rem 0.625rem 2.5rem;
-                font-size: 1rem;
-                line-height: 1.5;
-                color: #212529;
-                background-color: #fff;
-                border: 1px solid #dee2e6;
-                border-radius: 0.375rem;
-                transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
-            }
-
-            .smart-search-input:focus {
-                outline: none;
-                border-color: #86b7fe;
-                box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
-            }
-
-            .search-spinner {
-                position: absolute;
-                right: 0.75rem;
-                top: 50%;
-                transform: translateY(-50%);
-                display: none;
-                align-items: center;
-                justify-content: center;
-                color: #6c757d;
-            }
-
-            .spin-animation {
-                animation: spin 1s linear infinite;
-                font-size: 1.125rem;
-            }
-
-            @keyframes spin {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
-            }
-
-            /* Selected Items Container */
-            .smart-search-selected-items {
-                margin-top: 0.75rem;
-                padding: 0.75rem;
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
-                border: 1px solid #e7e9fc;
-                border-radius: 0.375rem;
-            }
-
-            .selected-items-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 0.5rem;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid #e7e9fc;
-            }
-
-            .selected-count {
-                font-size: 0.875rem;
-                font-weight: 600;
-                color: #667eea;
-            }
-
-            .clear-all-btn {
-                background: none;
-                border: none;
-                color: #dc3545;
-                font-size: 0.8125rem;
-                font-weight: 500;
-                cursor: pointer;
-                padding: 0.25rem 0.5rem;
-                border-radius: 0.25rem;
-                display: flex;
-                align-items: center;
-                gap: 0.25rem;
-                transition: background-color 0.15s;
-            }
-
-            .clear-all-btn:hover {
-                background-color: rgba(220, 53, 69, 0.1);
-            }
-
-            .selected-items-list {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 0.5rem;
-            }
-
-            .selected-tag {
-                display: inline-flex;
-                align-items: center;
-                gap: 0.375rem;
-                padding: 0.375rem 0.625rem;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: #fff;
-                border-radius: 0.25rem;
-                font-size: 0.875rem;
-                font-weight: 500;
-                animation: tagFadeIn 0.2s ease-out;
-            }
-
-            @keyframes tagFadeIn {
-                from {
-                    opacity: 0;
-                    transform: scale(0.9);
-                }
-                to {
-                    opacity: 1;
-                    transform: scale(1);
-                }
-            }
-
-            .selected-tag-name {
-                max-width: 200px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-
-            .selected-tag-remove {
-                background: none;
-                border: none;
-                color: #fff;
-                cursor: pointer;
-                padding: 0;
-                display: flex;
-                align-items: center;
-                opacity: 0.8;
-                transition: opacity 0.15s;
-                font-size: 1rem;
-            }
-
-            .selected-tag-remove:hover {
-                opacity: 1;
-            }
-
-            /* Dropdown */
-            .smart-search-dropdown {
-                position: absolute;
-                top: calc(100% + 0.25rem);
-                left: 0;
-                right: 0;
-                background: #fff;
-                border: 1px solid #dee2e6;
-                border-radius: 0.375rem;
-                box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
-                z-index: 1050;
-                max-height: 400px;
-                display: none;
-                animation: dropdownSlideIn 0.2s ease-out;
-            }
-
-            @keyframes dropdownSlideIn {
-                from {
-                    opacity: 0;
-                    transform: translateY(-10px);
-                }
-                to {
-                    opacity: 1;
-                    transform: translateY(0);
-                }
-            }
-
-            .smart-search-results {
-                max-height: 350px;
-                overflow-y: auto;
-                padding: 0.25rem 0;
-            }
-
-            /* Custom Scrollbar */
-            .smart-search-results::-webkit-scrollbar {
-                width: 8px;
-            }
-
-            .smart-search-results::-webkit-scrollbar-track {
-                background: #f1f3f5;
-                border-radius: 4px;
-            }
-
-            .smart-search-results::-webkit-scrollbar-thumb {
-                background: #adb5bd;
-                border-radius: 4px;
-            }
-
-            .smart-search-results::-webkit-scrollbar-thumb:hover {
-                background: #6c757d;
-            }
-
-            /* Result Item - Mobile Optimized */
-            .search-result-item {
-                padding: 0.875rem;
-                cursor: pointer;
-                transition: background-color 0.15s;
-                border-bottom: 1px solid #f1f3f5;
-                min-height: 60px;
-            }
-
-            .search-result-item:last-child {
-                border-bottom: none;
-            }
-
-            .search-result-item:hover {
-                background-color: #f8f9fa;
-            }
-
-            .search-result-item.selected {
-                background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.08) 100%);
-            }
-
-            .result-item-content {
-                display: flex;
-                align-items: flex-start;
-                gap: 0.75rem;
-            }
-
-            .result-item-icon {
-                flex-shrink: 0;
-                width: 32px;
-                height: 32px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                border-radius: 50%;
-                background-color: #f1f3f5;
-                color: #6c757d;
-                font-size: 1.25rem;
-                transition: all 0.2s;
-                margin-top: 2px;
-            }
-
-            .result-item-icon.selected {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: #fff;
-            }
-
-            .result-item-text {
-                flex: 1;
-                min-width: 0;
-            }
-
-            .result-item-name {
-                font-size: 1rem;
-                font-weight: 500;
-                color: #212529;
-                line-height: 1.4;
-                margin-bottom: 0.25rem;
-                
-                /* Two-line ellipsis */
-                display: -webkit-box;
-                -webkit-line-clamp: 2;
-                -webkit-box-orient: vertical;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                word-break: break-word;
-            }
-
-            .result-item-description {
-                font-size: 0.875rem;
-                color: #6c757d;
-                line-height: 1.3;
-                
-                /* Single line ellipsis */
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-
-            /* No Results */
-            .smart-search-no-results {
-                display: none;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                padding: 2rem 1rem;
-                color: #6c757d;
-            }
-
-            .smart-search-no-results i {
-                font-size: 3rem;
-                margin-bottom: 0.5rem;
-                opacity: 0.5;
-            }
-
-            .smart-search-no-results p {
-                margin: 0;
-                font-size: 0.875rem;
-            }
-
-            /* Pagination Info */
-            .smart-search-pagination {
-                padding: 0.75rem;
-                text-align: center;
-                border-top: 1px solid #dee2e6;
-                background-color: #f8f9fa;
-                border-radius: 0 0 0.375rem 0.375rem;
-            }
-
-            .pagination-info {
-                background: none;
-                border: none;
-                color: #667eea;
-                font-size: 0.8125rem;
-                font-weight: 500;
-                display: inline-flex;
-                align-items: center;
-                gap: 0.375rem;
-                cursor: default;
-            }
-
-            .pagination-info i {
-                animation: bounce 2s infinite;
-            }
-
-            @keyframes bounce {
-                0%, 100% { transform: translateY(0); }
-                50% { transform: translateY(-4px); }
-            }
-
-            /* Mobile Optimizations */
-            @media (max-width: 768px) {
-                .smart-search-input {
-                    font-size: 16px; /* Prevents zoom on iOS */
-                    padding: 0.75rem 2.5rem 0.75rem 2.5rem;
-                }
-
-                .search-result-item {
-                    padding: 1rem;
-                    min-height: 68px;
-                }
-
-                .result-item-icon {
-                    width: 36px;
-                    height: 36px;
-                    font-size: 1.375rem;
-                }
-
-                .result-item-name {
-                    font-size: 1.0625rem;
-                }
-
-                .smart-search-dropdown {
-                    max-height: 70vh;
-                }
-
-                .smart-search-results {
-                    max-height: calc(70vh - 50px);
-                }
-            }
-
-            /* Dark Mode Support */
-            @media (prefers-color-scheme: dark) {
-                .smart-search-label {
-                    color: #f8f9fa;
-                }
-
-                .smart-search-input {
-                    color: #f8f9fa;
-                    background-color: #2b3035;
-                    border-color: #495057;
-                }
-
-                .smart-search-input:focus {
-                    border-color: #6c757d;
-                    box-shadow: 0 0 0 0.25rem rgba(108, 117, 125, 0.25);
-                }
-
-                .smart-search-input::placeholder {
-                    color: #6c757d;
-                }
-
-                .search-icon,
-                .search-spinner {
-                    color: #adb5bd;
-                }
-
-                .smart-search-selected-items {
-                    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
-                    border-color: #495057;
-                }
-
-                .selected-items-header {
-                    border-bottom-color: #495057;
-                }
-
-                .selected-count {
-                    color: #a8b4ff;
-                }
-
-                .clear-all-btn {
-                    color: #ff6b6b;
-                }
-
-                .clear-all-btn:hover {
-                    background-color: rgba(255, 107, 107, 0.1);
-                }
-
-                .smart-search-dropdown {
-                    background: #2b3035;
-                    border-color: #495057;
-                    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.5);
-                }
-
-                .smart-search-results::-webkit-scrollbar-track {
-                    background: #1a1d20;
-                }
-
-                .smart-search-results::-webkit-scrollbar-thumb {
-                    background: #495057;
-                }
-
-                .smart-search-results::-webkit-scrollbar-thumb:hover {
-                    background: #6c757d;
-                }
-
-                .search-result-item {
-                    border-bottom-color: #343a40;
-                }
-
-                .search-result-item:hover {
-                    background-color: #1a1d20;
-                }
-
-                .search-result-item.selected {
-                    background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
-                }
-
-                .result-item-icon {
-                    background-color: #343a40;
-                    color: #adb5bd;
-                }
-
-                .result-item-name {
-                    color: #f8f9fa;
-                }
-
-                .result-item-description {
-                    color: #adb5bd;
-                }
-
-                .smart-search-no-results {
-                    color: #adb5bd;
-                }
-
-                .smart-search-pagination {
-                    background-color: #1a1d20;
-                    border-top-color: #495057;
-                }
-
-                .pagination-info {
-                    color: #a8b4ff;
-                }
-            }
-
-            /* Accessibility */
-            .smart-search-input:focus-visible,
-            .search-result-item:focus-visible,
-            .selected-tag-remove:focus-visible,
-            .clear-all-btn:focus-visible {
-                outline: 2px solid #667eea;
-                outline-offset: 2px;
-            }
-        `;
-        this.appendChild(style);
+    clearSelection() {
+        this._state.selectedItems.clear();
+        this._updateSelectionDisplay();
+        this._updateHiddenInput();
+        this._el.input.value = '';
+    }
+
+    /** Programmatically trigger a search */
+    search(term) {
+        this._el.input.value = term;
+        this._state.searchTerm = term;
+        this._performSearch(term);
+    }
+
+    /** v1 alias — kept for backwards compat */
+    get value() {
+        return this._el?.hidden?.value || '';
+    }
+
+    reset() { this.clearSelection(); }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    _esc(str) {
+        return String(str || '')
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 }
 

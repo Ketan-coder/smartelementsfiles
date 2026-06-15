@@ -8,7 +8,7 @@
 
 **Author:** Ketan Coder — [github.com/Ketan-coder](https://github.com/Ketan-coder)  
 **License:** [Business Source License 1.1](./LICENSE) — free for personal & non-commercial use  
-**Version:** 1.0.0  
+**Version:** 2.0.0  
 **Stack:** Vanilla JS · Web Components · Bootstrap 5 / Halfmoon · Django-ready
 
 ---
@@ -143,25 +143,25 @@ your_project/
 
 <!-- OR -->
 <!-- SmartElements (in this order) -->
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_core.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_motion.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_effect.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_filter_box.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/counter_animation.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_button.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/button.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_search_input.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/input.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/rich_text_input.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_list_tile.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_image.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_table.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_form.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_grid.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_state.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_chart.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_permission.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@main/smart_data.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_core.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_motion.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_effect.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_filter_box.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/counter_animation.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_button.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/button.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_search_input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/rich_text_input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_list_tile.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_image.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_table.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_form.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_grid.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_state.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_chart.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_permission.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_data.js"></script>
 
 <!-- Global singletons — once in base.html, inside data-barba="container" -->
 <smart-toast position="top-right" max="5"></smart-toast>
