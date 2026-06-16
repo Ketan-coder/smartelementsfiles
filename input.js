@@ -151,38 +151,56 @@ class SmartInput extends HTMLElement {
     _applyTheme() {
         if (window.SmartElement) return SmartElement.prototype._applyTheme.call(this);
         if (this._getMode() !== 'default') return;
-
+    
         if (this._scMqlHandler) {
             this._scMql?.removeEventListener('change', this._scMqlHandler);
             this._scMqlHandler = null; this._scMql = null;
         }
         if (this._scObserver) { this._scObserver.disconnect(); this._scObserver = null; }
-
+    
         const theme = this._getTheme();
         if (theme === 'light' || theme === 'dark') {
             this.dataset.scTheme = theme;
             return;
         }
-
+    
         const _resolve = () => {
+            if (this.dataset.scTheme) return this.dataset.scTheme;
+            
             const ancestor = this.closest('[data-sc-theme]');
-            if (ancestor && ancestor !== this) return ancestor.dataset.scTheme || 'light';
-            if (this._scMql) return this._scMql.matches ? 'dark' : 'light';
+            if (ancestor) return ancestor.dataset.scTheme || 'light';
+            
+            if (document.body && document.body.dataset.scTheme) {
+                return document.body.dataset.scTheme;
+            }
+            if (document.documentElement && document.documentElement.dataset.scTheme) {
+                return document.documentElement.dataset.scTheme;
+            }
+            if (this._scMql && this._scMql.matches) return 'dark';
             return 'light';
         };
-        const _apply = () => { this.dataset.scTheme = _resolve(); };
-
+        
+        const _apply = () => { 
+            const resolvedTheme = _resolve();
+            this.dataset.scTheme = resolvedTheme;
+        };
+    
         // Always observe body+html so JS toggle is caught immediately
         const targets = [document.body, document.documentElement].filter(Boolean);
         this._scObserver = new MutationObserver(_apply);
-        targets.forEach(t => this._scObserver.observe(t, {
-            attributes: true, attributeFilter: ['data-sc-theme']
-        }));
-
+        targets.forEach(t => {
+            if (t) {
+                this._scObserver.observe(t, {
+                    attributes: true, 
+                    attributeFilter: ['data-sc-theme']
+                });
+            }
+        });
+    
         this._scMql = window.matchMedia('(prefers-color-scheme: dark)');
         this._scMqlHandler = _apply;
         this._scMql.addEventListener('change', this._scMqlHandler);
-
+    
         _apply();
     }
 
@@ -605,6 +623,12 @@ class SmartInput extends HTMLElement {
             } catch (e) {
                 console.warn('[smart-input] Invalid JSON in data-options:', options);
             }
+            // ── Inject styles + theme for radio (early-return path) ──────────
+            if (mode === 'default') {
+                this._injectStyles();
+                this._applyTheme();
+            }
+            this._initStateIntegration();
             return;
         }
 
@@ -1379,16 +1403,57 @@ class SmartInput extends HTMLElement {
                 color: #e5e7eb;
             }
 
-            /* Radio button visibility fix in dark mode */
+            /* ── Fix: Radio label visibility in dark mode ── */
+            smart-input .si-check-label {
+                color: var(--sc-text, #1a1d23);
+            }
+            
+            smart-input[data-sc-theme="dark"] .si-check-label {
+                color: var(--sc-text, #e5e7eb) !important;
+            }
+            
             smart-input[data-sc-theme="dark"] .si-check-input[type="radio"] {
                 border: 2px solid #6b7280;
                 background-color: transparent;
                 accent-color: var(--sc-focus, #6366f1);
             }
+            
+            smart-input[data-sc-theme="dark"] .si-check-input[type="radio"]:checked {
+                background-color: var(--sc-focus, #6366f1);
+                border-color: var(--sc-focus, #6366f1);
+            }
+            
+            /* ── Fix: Remove gray background from inputs in dark mode ── */
+            smart-input[data-sc-theme="dark"] .si-input {
+                background: var(--sc-bg, #1f2937) !important;
+                color: var(--sc-text, #e5e7eb) !important;
+            }
+            
+            smart-input[data-sc-theme="dark"] .si-container {
+                background: transparent;
+            }
+            
+            /* ── Ensure form-control doesn't override in dark mode ── */
+            smart-input[data-sc-theme="dark"] .form-control {
+                background-color: var(--sc-bg, #1f2937) !important;
+                color: var(--sc-text, #e5e7eb) !important;
+                border-color: var(--sc-border, #374151) !important;
+            }
 
             smart-input[data-sc-theme="dark"] .si-check-input[type="radio"]:checked {
                 background-color: var(--sc-focus, #6366f1);
                 border-color: var(--sc-focus, #6366f1);
+            }
+            smart-input {
+                background-color: transparent !important;
+            }
+            
+            smart-input[data-sc-theme="dark"] {
+                background-color: transparent !important;
+            }
+            
+            .si-container {
+                background-color: transparent !important;
             }
         `;
         document.head.appendChild(s);
