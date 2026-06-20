@@ -325,7 +325,7 @@ class SmartInput extends HTMLElement {
                 input.name      = name;
                 input.className = this._cls('si-input', 'form-select');
                 if (noAutocomplete) input.setAttribute('autocomplete', 'off');
-
+        
                 if (options) {
                     try {
                         const opts = JSON.parse(options);
@@ -346,8 +346,25 @@ class SmartInput extends HTMLElement {
                         console.warn('[smart-input] Invalid JSON in data-options:', options);
                     }
                 }
-
+        
                 container.appendChild(input);
+        
+                // === NEW: Custom dropdown arrow for single select ===
+                const arrow = document.createElement('i');
+                arrow.className = 'ph ph-caret-down si-select-arrow';
+                container.appendChild(arrow);
+        
+                // Manage arrow state properly
+                const updateArrow = () => {
+                    arrow.classList.toggle('open', document.activeElement === input);
+                };
+        
+                input.addEventListener('focus', updateArrow);
+                input.addEventListener('blur', () => {
+                    setTimeout(updateArrow, 150); // small delay to handle click-to-close
+                });
+                input.addEventListener('change', updateArrow);
+        
                 if (fetchUrl) this.createSearchBox(container, input, fetchUrl, responsePath);
             }
         }
@@ -1444,16 +1461,41 @@ class SmartInput extends HTMLElement {
                 background-color: var(--sc-focus, #6366f1);
                 border-color: var(--sc-focus, #6366f1);
             }
-            smart-input {
-                background-color: transparent !important;
+
+            /* ── Single Select Custom Arrow ───────────────────────────────────── */
+            .si-select-arrow {
+                position: absolute;
+                right: 0.75rem;
+                top: 50%;
+                transform: translateY(-50%);
+                pointer-events: none;
+                color: var(--sc-text-muted, #6b7280);
+                font-size: 1.1rem;
+                transition: transform 0.2s ease;
+                z-index: 3;
             }
-            
-            smart-input[data-sc-theme="dark"] {
-                background-color: transparent !important;
+
+            .si-select-arrow.open {
+                transform: translateY(-50%) rotate(180deg);
+                color: var(--sc-focus, #6366f1);
             }
-            
-            .si-container {
-                background-color: transparent !important;
+
+            /* Hide native browser arrow */
+            .si-input.form-select,
+            select.si-input {
+                appearance: none;
+                -webkit-appearance: none;
+                -moz-appearance: none;
+                padding-right: 2.5rem !important;   /* space for custom arrow */
+            }
+
+            /* Dark mode */
+            smart-input[data-sc-theme="dark"] .si-select-arrow {
+                color: #9ca3af;
+            }
+
+            smart-input[data-sc-theme="dark"] .si-select-arrow.open {
+                color: var(--sc-focus, #6366f1);
             }
         `;
         document.head.appendChild(s);

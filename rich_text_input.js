@@ -108,8 +108,12 @@ class SmartQuill extends HTMLElement {
         this.config = { name, label, placeholder, required, requiredMessage,
                         isReadonly, autosaveKey, maxlength, showWordCount };
 
-        this._injectStyles();
+        // ── THEME FIX: resolve + apply theme BEFORE injecting any styles ─────
+        // This guarantees this.dataset.scTheme is correct (read from the
+        // closest [data-sc-theme] ancestor, an explicit attribute, or OS
+        // preference) before _injectStyles()/_injectThemeStyles() ever runs.
         this._applyTheme();
+        this._injectStyles();
 
         // ── Build skeleton ───────────────────────────────────────────────────
         const mode    = this._getMode();
@@ -147,14 +151,26 @@ class SmartQuill extends HTMLElement {
         this._counterWords   = this.querySelector('.sq-counter-words');
         this._autosaveBadge  = this.querySelector('.sq-autosave-badge');
 
-        if (isReadonly) return; // readonly just renders HTML, no Quill needed
+        if (isReadonly) {
+            return; // readonly just renders HTML, no Quill needed
+        }
 
-        this._loadQuill().then(() => this._initEditor(content));
+        this._loadQuill().then(() => {
+            this._initEditor(content);
+            // Re-apply theme after Quill builds its toolbar DOM. This is
+            // NOT a timing hack — _applyTheme() is synchronous and idempotent,
+            // it just re-confirms dataset.scTheme and re-injects the
+            // stylesheet so toolbar elements created by Quill are covered too.
+            this._applyTheme();
+        });
     }
 
     attributeChangedCallback(name, oldValue, newValue) {
         if (name === 'value' && this.editor) { this.value = newValue; return; }
-        if (name === 'theme' || name === 'styled') this._applyTheme();
+        if (name === 'theme' || name === 'styled') {
+            console.log(`[SmartQuill] attributeChangedCallback: ${name} changed → re-applying theme`);
+            this._applyTheme();
+        }
     }
 
     disconnectedCallback() {
@@ -181,34 +197,71 @@ class SmartQuill extends HTMLElement {
         return ['light', 'dark', 'auto'].includes(t) ? t : 'auto';
     }
 
+    /**
+     * Resolves and sets this.dataset.scTheme, then ALWAYS re-injects the
+     * Quill-specific theme stylesheet (_injectThemeStyles) so the two never
+     * drift out of sync. This method is intentionally idempotent and safe
+     * to call multiple times (on mount, after Quill init, on attribute
+     * change, on ancestor mutation, on OS preference change).
+     */
     _applyTheme() {
-        if (window.SmartElement) return SmartElement.prototype._applyTheme.call(this);
-        if (this._getMode() !== 'default') return;
+
+        if (window.SmartElement) {
+            SmartElement.prototype._applyTheme.call(this);
+            console.log(`[SmartQuill] theme resolved via SmartElement → ${this.dataset.scTheme}`);
+            this._injectThemeStyles();
+            return;
+        }
+
+        // ── Fallback logic (only runs if smart_core.js / SmartElement is NOT loaded) ──
+        if (this._getMode() !== 'default') {
+            return;
+        }
 
         if (this._scMqlHandler) {
             this._scMql?.removeEventListener('change', this._scMqlHandler);
-            this._scMqlHandler = null; this._scMql = null;
+            this._scMqlHandler = null;
         }
-        if (this._scObserver) { this._scObserver.disconnect(); this._scObserver = null; }
+        if (this._scObserver) {
+            this._scObserver.disconnect();
+            this._scObserver = null;
+        }
 
-        const theme = this._getTheme();
-        if (theme === 'light' || theme === 'dark') { this.dataset.scTheme = theme; return; }
+        const explicitTheme = this._getTheme(); // reads theme= attribute, normalized
 
+        if (explicitTheme === 'light' || explicitTheme === 'dark') {
+            this.dataset.scTheme = explicitTheme;
+            this._injectThemeStyles();
+            return;
+        }
+
+        // theme === 'auto': resolve from ancestor → OS → default light
         const _resolve = () => {
             const ancestor = this.closest('[data-sc-theme]');
-            if (ancestor && ancestor !== this) return ancestor.dataset.scTheme || 'light';
+            if (ancestor && ancestor !== this) {
+                return ancestor.dataset.scTheme || 'light';
+            }
             if (this._scMql) return this._scMql.matches ? 'dark' : 'light';
             return 'light';
         };
-        const _apply = () => { this.dataset.scTheme = _resolve(); };
+
+        const _apply = () => {
+            this.dataset.scTheme = _resolve();
+            console.log(`[SmartQuill] auto theme resolved → ${this.dataset.scTheme}`);
+            this._injectThemeStyles();
+        };
 
         const targets = [document.body, document.documentElement].filter(Boolean);
         this._scObserver = new MutationObserver(_apply);
-        targets.forEach(t => this._scObserver.observe(t, { attributes: true, attributeFilter: ['data-sc-theme'] }));
+        targets.forEach(t => this._scObserver.observe(t, {
+            attributes: true,
+            attributeFilter: ['data-sc-theme']
+        }));
 
         this._scMql = window.matchMedia('(prefers-color-scheme: dark)');
         this._scMqlHandler = _apply;
         this._scMql.addEventListener('change', this._scMqlHandler);
+
         _apply();
     }
 
@@ -709,280 +762,237 @@ class SmartQuill extends HTMLElement {
 
     // ── Styles ───────────────────────────────────────────────────────────────
 
+    /**
+     * Injects the common (theme-agnostic) stylesheet ONLY. Theme-specific
+     * styles are owned entirely by _injectThemeStyles(), which is called
+     * exclusively from _applyTheme() — never from here. This separation is
+     * what fixes the original race: theme resolution always happens before
+     * theme styles are written, because _applyTheme() runs first in
+     * connectedCallback() and calls _injectThemeStyles() itself.
+     */
     _injectStyles() {
-        if (document.getElementById('smart-quill-styles')) return;
+        if (!document.getElementById('smart-quill-common')) {
+            const common = document.createElement('style');
+            common.id = 'smart-quill-common';
+            common.textContent = `
+                smart-quill {
+                    display: block;
+                    font-family: var(--sc-font, system-ui, -apple-system, 'Segoe UI', sans-serif);
+                    font-size: var(--sc-font-size, 0.9375rem);
+                }
 
-        const s = document.createElement('style');
-        s.id = 'smart-quill-styles';
-        s.textContent = `
+                .sq-hidden  { display: none !important; }
 
-            /* ── Host ─────────────────────────────────────────────────────────── */
-            smart-quill {
-                display: block;
-                font-family: var(--sc-font, system-ui, -apple-system, 'Segoe UI', sans-serif);
-                font-size: var(--sc-font-size, 0.9375rem);
-            }
+                .sq-label {
+                    display: block; margin-bottom: 0.4rem;
+                    font-size: 0.875rem; font-weight: 500;
+                    color: var(--sc-text, #374151);
+                }
+                .sq-required-star { color: var(--sc-error, #dc2626); margin-left: 1px; }
 
-            /* ── Utility ─────────────────────────────────────────────────────── */
-            .sq-hidden  { display: none !important; }
+                /* Core Quill structure */
+                smart-quill .ql-toolbar {
+                    border-top-left-radius: var(--sc-radius, 0.4rem);
+                    border-top-right-radius: var(--sc-radius, 0.4rem);
+                    display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+                }
+                smart-quill .ql-container {
+                    border-bottom-left-radius: var(--sc-radius, 0.4rem);
+                    border-bottom-right-radius: var(--sc-radius, 0.4rem);
+                    font-size: var(--sc-font-size, 0.9375rem);
+                    font-family: var(--sc-font, system-ui, sans-serif);
+                    transition: border-color 0.2s, box-shadow 0.2s;
+                }
+                smart-quill .ql-editor {
+                    min-height: 150px; max-height: 400px; overflow-y: auto;
+                }
 
-            /* ── Label ───────────────────────────────────────────────────────── */
-            .sq-label {
-                display: block;
-                margin-bottom: 0.4rem;
-                font-size: 0.875rem;
-                font-weight: 500;
-                color: var(--sc-text, #374151);
-            }
-            .sq-required-star {
-                color: var(--sc-error, #dc2626);
-                margin-left: 1px;
-            }
+                /* Content inheritance */
+                smart-quill .ql-editor p:not([style*="color"]),
+                smart-quill .ql-editor h1:not([style*="color"]),
+                smart-quill .ql-editor h2:not([style*="color"]),
+                smart-quill .ql-editor h3:not([style*="color"]),
+                smart-quill .ql-editor h4:not([style*="color"]),
+                smart-quill .ql-editor h5:not([style*="color"]),
+                smart-quill .ql-editor h6:not([style*="color"]),
+                smart-quill .ql-editor li:not([style*="color"]),
+                smart-quill .ql-editor td:not([style*="color"]),
+                smart-quill .ql-editor th:not([style*="color"]),
+                smart-quill .ql-editor blockquote:not([style*="color"]),
+                smart-quill .ql-editor pre:not([style*="color"]),
+                smart-quill .ql-editor span:not([class*="ql-"]):not([style*="color"]),
+                smart-quill .ql-editor ol:not([style*="color"]),
+                smart-quill .ql-editor ul:not([style*="color"]) {
+                    color: inherit !important;
+                }
 
-            /* ── Quill toolbar + editor scoping ──────────────────────────────── */
-            smart-quill .ql-toolbar {
-                border-top-left-radius: var(--sc-radius, 0.4rem);
-                border-top-right-radius: var(--sc-radius, 0.4rem);
-                background: var(--sc-bg-subtle, #f3f4f6);
-                border-color: var(--sc-border, #d1d5db);
-                display: flex;
-                align-items: center;
-                flex-wrap: wrap;
-                gap: 2px;
-            }
-            smart-quill .ql-container {
-                border-bottom-left-radius: var(--sc-radius, 0.4rem);
-                border-bottom-right-radius: var(--sc-radius, 0.4rem);
-                border-color: var(--sc-border, #d1d5db);
-                font-size: var(--sc-font-size, 0.9375rem);
-                font-family: var(--sc-font, system-ui, sans-serif);
-                transition: border-color 0.2s, box-shadow 0.2s;
-            }
-            smart-quill .ql-editor {
-                min-height: 150px;
-                max-height: 400px;
-                overflow-y: auto;
-                color: var(--sc-text, #1a1d23);
-                background: var(--sc-bg, #ffffff);
-            }
-            /* Force all Quill content elements to inherit the editor colour.
-               Quill Snow CSS sets explicit colour on p/li/h1 etc which beats
-               the container rule above — this ensures dark mode text is visible.
-               span[style] is excluded so user-applied toolbar colours are respected. */
-            smart-quill .ql-editor p:not([style*="color"]),
-            smart-quill .ql-editor h1:not([style*="color"]),
-            smart-quill .ql-editor h2:not([style*="color"]),
-            smart-quill .ql-editor h3:not([style*="color"]),
-            smart-quill .ql-editor h4:not([style*="color"]),
-            smart-quill .ql-editor h5:not([style*="color"]),
-            smart-quill .ql-editor h6:not([style*="color"]),
-            smart-quill .ql-editor li:not([style*="color"]),
-            smart-quill .ql-editor td:not([style*="color"]),
-            smart-quill .ql-editor th:not([style*="color"]),
-            smart-quill .ql-editor blockquote:not([style*="color"]),
-            smart-quill .ql-editor pre:not([style*="color"]),
-            smart-quill .ql-editor span:not([class*="ql-"]):not([style*="color"]),
-            smart-quill .ql-editor ol:not([style*="color"]),
-            smart-quill .ql-editor ul:not([style*="color"]) {
-                color: inherit;
-            }
-            smart-quill .ql-editor:focus { outline: none; }
-            smart-quill .sq-quill-wrap:focus-within .ql-container {
-                border-color: var(--sc-focus, #6366f1);
-                box-shadow:
-                    0 0 0 3px var(--sc-focus-ring, rgba(99,102,241,.18)),
-                    0 0 8px 1px var(--sc-focus-ring, rgba(99,102,241,.10));
-            }
-            smart-quill .sq-quill-wrap:focus-within .ql-toolbar {
-                border-color: var(--sc-focus, #6366f1);
-            }
-            smart-quill .ql-editor.ql-blank::before {
-                color: var(--sc-text-muted, #9ca3af);
-                font-style: italic;
-            }
-            smart-quill .ql-editor p,
-            smart-quill .ql-editor h1,
-            smart-quill .ql-editor h2,
-            smart-quill .ql-editor h3 { color: var(--sc-text, #1a1d23); }
+                smart-quill .ql-editor:focus { outline: none; }
 
-            /* Quill toolbar icon colour */
-            smart-quill .ql-stroke { stroke: var(--sc-text, #374151) !important; }
-            smart-quill .ql-fill   { fill:   var(--sc-text, #374151) !important; }
-            smart-quill .ql-picker-label { color: var(--sc-text, #374151) !important; }
+                smart-quill .sq-quill-wrap:focus-within .ql-container {
+                    border-color: var(--sc-focus, #6366f1);
+                    box-shadow: 0 0 0 3px var(--sc-focus-ring, rgba(99,102,241,.18)),
+                                0 0 8px 1px var(--sc-focus-ring, rgba(99,102,241,.10));
+                }
+                smart-quill .sq-quill-wrap:focus-within .ql-toolbar {
+                    border-color: var(--sc-focus, #6366f1);
+                }
 
-            /* ── Invalid state ────────────────────────────────────────────────── */
-            smart-quill .sq-quill-wrap.sq-invalid .ql-container {
-                border-color: var(--sc-error, #dc2626) !important;
-                box-shadow:
-                    0 0 0 3px var(--sc-error-ring, rgba(220,38,38,.15)),
-                    0 0 8px 1px var(--sc-error-ring, rgba(220,38,38,.10));
-            }
-            smart-quill .sq-quill-wrap.sq-invalid .ql-toolbar {
-                border-color: var(--sc-error, #dc2626) !important;
-            }
+                smart-quill .ql-editor.ql-blank::before {
+                    color: var(--sc-text-muted, #9ca3af);
+                    font-style: italic;
+                }
 
-            /* ── Validation feedback ──────────────────────────────────────────── */
-            .sq-invalid-feedback {
-                display: none;
-                margin-top: 0.3rem;
-                font-size: 0.8125rem;
-                color: var(--sc-error, #dc2626);
-            }
-            .sq-invalid-feedback.sq-visible { display: block; }
+                /* Toolbar icons (theme-agnostic default — overridden per-theme below) */
+                smart-quill .ql-stroke { stroke: var(--sc-text, #374151) !important; }
+                smart-quill .ql-fill   { fill:   var(--sc-text, #374151) !important; }
+                smart-quill .ql-picker-label { color: var(--sc-text, #374151) !important; }
 
-            /* ── Shake ────────────────────────────────────────────────────────── */
-            .sq-shake { animation: sq-shake 0.4s ease-in-out; }
-            @keyframes sq-shake {
-                0%,100% { transform: translateX(0); }
-                25%      { transform: translateX(-5px); }
-                50%      { transform: translateX(5px); }
-                75%      { transform: translateX(-5px); }
-            }
+                /* Invalid state */
+                smart-quill .sq-quill-wrap.sq-invalid .ql-container,
+                smart-quill .sq-quill-wrap.sq-invalid .ql-toolbar {
+                    border-color: var(--sc-error, #dc2626) !important;
+                }
 
-            /* ── Counter ──────────────────────────────────────────────────────── */
-            .sq-counter {
-                display: flex;
-                justify-content: flex-end;
-                gap: 1rem;
-                margin-top: 0.25rem;
-                font-size: 0.78rem;
-                color: var(--sc-text-muted, #9ca3af);
-            }
-            .sq-counter--near  { color: var(--sc-warning, #d97706); }
-            .sq-counter--limit { color: var(--sc-error, #dc2626); font-weight: 600; }
+                /* UI elements */
+                .sq-invalid-feedback { display: none; margin-top: 0.3rem; font-size: 0.8125rem; color: var(--sc-error, #dc2626); }
+                .sq-invalid-feedback.sq-visible { display: block; }
 
-            /* ── Autosave badge ───────────────────────────────────────────────── */
-            .sq-autosave-badge {
-                margin-top: 0.2rem;
-                font-size: 0.75rem;
-                color: var(--sc-success, #16a34a);
-                display: flex;
-                align-items: center;
-                gap: 0.3rem;
-            }
-            .sq-autosave-badge::before {
-                content: '✓';
-                font-weight: 700;
-            }
+                .sq-counter { display: flex; justify-content: flex-end; gap: 1rem; margin-top: 0.25rem; font-size: 0.78rem; color: var(--sc-text-muted, #9ca3af); }
+                .sq-counter--near  { color: var(--sc-warning, #d97706); }
+                .sq-counter--limit { color: var(--sc-error, #dc2626); font-weight: 600; }
 
-            /* ── Export buttons ───────────────────────────────────────────────── */
-            .sq-toolbar-extra {
-                display: inline-flex;
-                align-items: center;
-                gap: 2px;
-                margin-left: auto;
-                padding-left: 0.5rem;
-                border-left: 1px solid var(--sc-border, #d1d5db);
-            }
-            .sq-export-btn {
-                background: none;
-                border: none;
-                cursor: pointer;
-                padding: 0.25rem 0.35rem;
-                border-radius: 0.25rem;
-                color: var(--sc-text-muted, #6b7280);
-                font-size: 1rem;
-                line-height: 1;
-                display: flex;
-                align-items: center;
-                transition: color 0.15s, background 0.15s;
-            }
-            .sq-export-btn:hover {
-                color: var(--sc-text, #1a1d23);
-                background: var(--sc-bg-subtle, #f3f4f6);
-            }
+                .sq-autosave-badge {
+                    margin-top: 0.2rem; font-size: 0.75rem; color: var(--sc-success, #16a34a);
+                    display: flex; align-items: center; gap: 0.3rem;
+                }
+                .sq-autosave-badge::before { content: '✓'; font-weight: 700; }
 
-            /* ── Readonly ─────────────────────────────────────────────────────── */
-            .sq-readonly-content {
-                padding: 0.75rem;
-                border: 1.5px solid var(--sc-border, #d1d5db);
-                border-radius: var(--sc-radius, 0.4rem);
-                background: var(--sc-bg-subtle, #f9fafb);
-                color: var(--sc-text, #1a1d23);
-                font-size: var(--sc-font-size, 0.9375rem);
-                line-height: 1.6;
-                min-height: 80px;
-            }
+                .sq-toolbar-extra { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding-left: 0.5rem; border-left: 1px solid var(--sc-border, #d1d5db); }
+                .sq-export-btn { background: none; border: none; cursor: pointer; padding: 0.25rem 0.35rem; border-radius: 0.25rem; color: var(--sc-text-muted, #6b7280); }
+                .sq-export-btn:hover { color: var(--sc-text, #1a1d23); background: var(--sc-bg-subtle, #f3f4f6); }
 
-            /* ── Dark theme ───────────────────────────────────────────────────── */
-            [data-sc-theme="dark"] smart-quill .ql-toolbar,
-            smart-quill[data-sc-theme="dark"] .ql-toolbar {
-                background: var(--sc-bg-subtle, #374151);
-                border-color: var(--sc-border, #4b5563);
-            }
-            [data-sc-theme="dark"] smart-quill .ql-container,
-            smart-quill[data-sc-theme="dark"] .ql-container {
-                border-color: var(--sc-border, #4b5563);
-            }
-            [data-sc-theme="dark"] smart-quill .ql-editor,
-            smart-quill[data-sc-theme="dark"] .ql-editor {
-                background: var(--sc-bg, #1f2937) !important;
-                color: var(--sc-text, #e5e7eb) !important;
-            }
-            /* Also force inherit on all child elements in dark mode,
-               but NOT on elements with user-applied inline color styles */
-            [data-sc-theme="dark"] smart-quill .ql-editor p:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor h1:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor h2:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor h3:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor h4:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor h5:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor h6:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor li:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor td:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor th:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor blockquote:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor pre:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor span:not([class*="ql-"]):not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor ol:not([style*="color"]),
-            [data-sc-theme="dark"] smart-quill .ql-editor ul:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor p:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor h1:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor h2:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor h3:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor h4:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor h5:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor h6:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor li:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor td:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor th:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor blockquote:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor pre:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor span:not([class*="ql-"]):not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor ol:not([style*="color"]),
-            smart-quill[data-sc-theme="dark"] .ql-editor ul:not([style*="color"]) {
-                color: var(--sc-text, #e5e7eb);
-            }
-            [data-sc-theme="dark"] smart-quill .ql-stroke,
-            smart-quill[data-sc-theme="dark"] .ql-stroke { stroke: #9ca3af !important; }
-            [data-sc-theme="dark"] smart-quill .ql-fill,
-            smart-quill[data-sc-theme="dark"] .ql-fill   { fill: #9ca3af !important; }
-            [data-sc-theme="dark"] smart-quill .ql-picker-label,
-            smart-quill[data-sc-theme="dark"] .ql-picker-label { color: #9ca3af !important; }
-            [data-sc-theme="dark"] smart-quill .ql-picker-options,
-            smart-quill[data-sc-theme="dark"] .ql-picker-options {
-                background: var(--sc-bg, #1f2937);
-                border-color: var(--sc-border, #4b5563);
-            }
-            [data-sc-theme="dark"] smart-quill .ql-picker-item,
-            smart-quill[data-sc-theme="dark"] .ql-picker-item { color: var(--sc-text, #e5e7eb) !important; }
-            [data-sc-theme="dark"] smart-quill .sq-label,
-            smart-quill[data-sc-theme="dark"] .sq-label { color: var(--sc-text, #e5e7eb); }
-            [data-sc-theme="dark"] smart-quill .sq-toolbar-extra,
-            smart-quill[data-sc-theme="dark"] .sq-toolbar-extra { border-color: #4b5563; }
-            [data-sc-theme="dark"] smart-quill .sq-export-btn:hover,
-            smart-quill[data-sc-theme="dark"] .sq-export-btn:hover {
-                background: var(--sc-bg-subtle, #374151);
-                color: #e5e7eb;
-            }
-            [data-sc-theme="dark"] smart-quill .sq-readonly-content,
-            smart-quill[data-sc-theme="dark"] .sq-readonly-content {
-                background: var(--sc-bg, #1f2937);
-                border-color: var(--sc-border, #4b5563);
-                color: var(--sc-text, #e5e7eb);
-            }
-        `;
-        document.head.appendChild(s);
+                .sq-readonly-content {
+                    padding: 0.75rem; border: 1.5px solid var(--sc-border, #d1d5db);
+                    border-radius: var(--sc-radius, 0.4rem); background: var(--sc-bg-subtle, #f9fafb);
+                    color: var(--sc-text, #1a1d23);
+                }
+            `;
+            document.head.appendChild(common);
+        }
+    }
+
+    /**
+     * Writes/replaces the <style id="smart-quill-theme"> block based on
+     * this.dataset.scTheme. Always reflects whatever _applyTheme() most
+     * recently resolved — never called on its own as a guess.
+     */
+    _injectThemeStyles() {
+        const old = document.getElementById('smart-quill-theme');
+        if (old) old.remove();
+
+        const themeStyle = document.createElement('style');
+        themeStyle.id = 'smart-quill-theme';
+
+        const isDark = this.dataset.scTheme === 'dark';
+
+        if (isDark) {
+            themeStyle.textContent = `
+                smart-quill .ql-toolbar,
+                [data-sc-theme="dark"] smart-quill .ql-toolbar {
+                    background: var(--sc-bg-subtle, #374151) !important;
+                    border-color: var(--sc-border, #4b5563) !important;
+                }
+                smart-quill .ql-container,
+                [data-sc-theme="dark"] smart-quill .ql-container {
+                    border-color: var(--sc-border, #4b5563) !important;
+                }
+                smart-quill .ql-editor,
+                [data-sc-theme="dark"] smart-quill .ql-editor {
+                    background: var(--sc-bg, #1f2937) !important;
+                    color: var(--sc-text, #e5e7eb) !important;
+                }
+                smart-quill .ql-editor p:not([style*="color"]),
+                smart-quill .ql-editor h1:not([style*="color"]),
+                smart-quill .ql-editor h2:not([style*="color"]),
+                smart-quill .ql-editor h3:not([style*="color"]),
+                smart-quill .ql-editor h4:not([style*="color"]),
+                smart-quill .ql-editor h5:not([style*="color"]),
+                smart-quill .ql-editor h6:not([style*="color"]),
+                smart-quill .ql-editor li:not([style*="color"]),
+                smart-quill .ql-editor td:not([style*="color"]),
+                smart-quill .ql-editor th:not([style*="color"]),
+                smart-quill .ql-editor blockquote:not([style*="color"]),
+                smart-quill .ql-editor pre:not([style*="color"]),
+                smart-quill .ql-editor span:not([class*="ql-"]):not([style*="color"]),
+                smart-quill .ql-editor ol:not([style*="color"]),
+                smart-quill .ql-editor ul:not([style*="color"]) {
+                    color: var(--sc-text, #e5e7eb) !important;
+                }
+                smart-quill .ql-stroke {
+                    stroke: var(--sc-text-muted, #9ca3af) !important;
+                }
+                smart-quill .ql-fill {
+                    fill: var(--sc-text-muted, #9ca3af) !important;
+                }
+                smart-quill .ql-picker-label {
+                    color: var(--sc-text-muted, #9ca3af) !important;
+                }
+                smart-quill .ql-picker-options {
+                    background: var(--sc-bg-subtle, #374151) !important;
+                    border-color: var(--sc-border, #4b5563) !important;
+                }
+                smart-quill .ql-picker-item {
+                    color: var(--sc-text, #e5e7eb) !important;
+                }
+                smart-quill .ql-picker-item.ql-selected,
+                smart-quill .ql-picker-item:hover {
+                    background: var(--sc-bg, #1f2937) !important;
+                    color: var(--sc-focus, #818cf8) !important;
+                }
+                smart-quill .sq-label {
+                    color: var(--sc-text, #e5e7eb) !important;
+                }
+                smart-quill .sq-readonly-content {
+                    background: var(--sc-bg-subtle, #374151) !important;
+                    border-color: var(--sc-border, #4b5563) !important;
+                    color: var(--sc-text, #e5e7eb) !important;
+                }
+                smart-quill .ql-editor.ql-blank::before {
+                    color: var(--sc-text-muted, #9ca3af) !important;
+                }
+                smart-quill .sq-quill-wrap:focus-within .ql-container {
+                    border-color: var(--sc-focus, #818cf8) !important;
+                    box-shadow: 0 0 0 3px var(--sc-focus-ring, rgba(129,140,248,.18)),
+                                0 0 8px 1px var(--sc-focus-ring, rgba(129,140,248,.10)) !important;
+                }
+                smart-quill .sq-quill-wrap:focus-within .ql-toolbar {
+                    border-color: var(--sc-focus, #818cf8) !important;
+                }
+            `;
+        } else {
+            themeStyle.textContent = `
+                smart-quill .ql-toolbar,
+                [data-sc-theme="light"] smart-quill .ql-toolbar {
+                    background: var(--sc-bg-subtle, #f3f4f6) !important;
+                    border-color: var(--sc-border, #d1d5db) !important;
+                }
+                smart-quill .ql-container,
+                [data-sc-theme="light"] smart-quill .ql-container {
+                    border-color: var(--sc-border, #d1d5db) !important;
+                }
+                smart-quill .ql-editor,
+                [data-sc-theme="light"] smart-quill .ql-editor {
+                    background: var(--sc-bg, #ffffff) !important;
+                    color: var(--sc-text, #1a1d23) !important;
+                }
+                smart-quill .sq-readonly-content {
+                    background: var(--sc-bg-subtle, #f9fafb) !important;
+                    color: var(--sc-text, #1a1d23) !important;
+                }
+            `;
+        }
+
+        document.head.appendChild(themeStyle);
     }
 
     // Legacy alias
