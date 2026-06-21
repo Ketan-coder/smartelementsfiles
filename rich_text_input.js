@@ -19,6 +19,9 @@
  *   semantic tags (b, i, u, a, p, ul, ol, li, h1–h6, blockquote, code, pre).
  * • Export — export-pdf and export-html toolbar buttons. PDF uses print
  *   dialog (no external dep). HTML downloads a .html file.
+ * • fullscreen — toolbar button to expand the editor into a full
+ *   viewport overlay (not native Fullscreen API), with a close (✕) button
+ *   and Escape-to-close. Theme-aware in both states.
  *
  * ── BACKWARDS COMPATIBILITY ───────────────────────────────────────────────
  * All v1 attributes, methods, and events preserved.
@@ -41,12 +44,14 @@
  *   autosave="draft-key"         localStorage key for autosave
  *   readonly                     display-only, no editing
  *   image-upload-url="/api/…"    POST endpoint for image uploads
+ *   no-fullscreen                opt out of the fullscreen toolbar button
  *
  * ── EVENTS ───────────────────────────────────────────────────────────────────
  *   input          — fires on every text change. detail: { value, length, words }
  *   sq-autosave    — fires after autosave. detail: { key, timestamp }
  *   sq-image       — fires after image upload. detail: { url }
  *   sq-export      — fires after export. detail: { format: 'pdf'|'html' }
+ *   sq-fullscreen  — fires on enter/exit. detail: { fullscreen: true|false }
  *
  * ── STABLE CLASS REFERENCE ───────────────────────────────────────────────────
  *   .sq-container        outer wrapper
@@ -60,6 +65,8 @@
  *   .sq-invalid-feedback validation error message
  *   .sq-visible          utility: makes hidden elements visible
  *   .sq-shake            validation shake animation class
+ *   .sq-fullscreen-overlay  the full-viewport overlay element
+ *   .sq-fullscreen-active  added to <html> while fullscreen is open
  */
 
 class SmartQuill extends HTMLElement {
@@ -68,6 +75,7 @@ class SmartQuill extends HTMLElement {
         this.editor        = null;
         this._initialized  = false;
         this._autosaveTimer = null;
+        this._isFullscreen  = false;
     }
 
     static get observedAttributes() {
@@ -91,6 +99,12 @@ class SmartQuill extends HTMLElement {
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     connectedCallback() {
+        // Re-parenting this element (body.appendChild(this) / placeholder.after(this))
+        // for fullscreen fires disconnectedCallback then connectedCallback per spec,
+        // even though nothing actually needs re-initialising — same node, same Quill
+        // instance, just relocated. _fsMoving is set for the duration of that single
+        // synchronous move so this callback can no-op cleanly.
+        if (this._fsMoving) return;
         if (this._initialized) return;
         this._initialized = true;
 
@@ -104,9 +118,10 @@ class SmartQuill extends HTMLElement {
         const autosaveKey     = this.getAttribute('autosave')         || '';
         const maxlength       = parseInt(this.getAttribute('maxlength') || '0', 10);
         const showWordCount   = this.hasAttribute('word-count');
+        const allowFullscreen = !this.hasAttribute('no-fullscreen');
 
         this.config = { name, label, placeholder, required, requiredMessage,
-                        isReadonly, autosaveKey, maxlength, showWordCount };
+                        isReadonly, autosaveKey, maxlength, showWordCount, allowFullscreen };
 
         // ── THEME FIX: resolve + apply theme BEFORE injecting any styles ─────
         // This guarantees this.dataset.scTheme is correct (read from the
@@ -145,7 +160,7 @@ class SmartQuill extends HTMLElement {
 
         this._errorFeedback  = this.querySelector('.sq-invalid-feedback');
         this._container      = this.querySelector('.sq-container');
-        this._quillWrap      = this.querySelector('.sq-quill-wrap');
+        this._quillWrap       = this.querySelector('.sq-quill-wrap');
         this._counterEl      = this.querySelector('.sq-counter');
         this._counterChars   = this.querySelector('.sq-counter-chars');
         this._counterWords   = this.querySelector('.sq-counter-words');
@@ -174,12 +189,22 @@ class SmartQuill extends HTMLElement {
     }
 
     disconnectedCallback() {
+        // Same fullscreen-move guard as connectedCallback (see note there) —
+        // the move from in-page to overlay (or back) is not a real removal,
+        // so skip teardown of autosave/theme listeners and don't treat this
+        // as "the component left the page".
+        if (this._fsMoving) return;
         if (this._autosaveTimer) clearInterval(this._autosaveTimer);
         if (this._scMqlHandler) {
             this._scMql?.removeEventListener('change', this._scMqlHandler);
             this._scMqlHandler = null; this._scMql = null;
         }
         if (this._scObserver) { this._scObserver.disconnect(); this._scObserver = null; }
+        // Make sure we don't leave the page stuck with a fullscreen overlay
+        // and a locked scrollbar if the component gets removed mid-fullscreen
+        // by something OTHER than our own toggle (e.g. an ancestor being
+        // removed from the DOM while fullscreen is open).
+        if (this._isFullscreen) this._exitFullscreen({ skipRestoreFocus: true });
     }
 
     // ── Theme (SmartElement delegation pattern) ──────────────────────────────
@@ -210,6 +235,7 @@ class SmartQuill extends HTMLElement {
             SmartElement.prototype._applyTheme.call(this);
             console.log(`[SmartQuill] theme resolved via SmartElement → ${this.dataset.scTheme}`);
             this._injectThemeStyles();
+            this._syncFullscreenTheme();
             return;
         }
 
@@ -232,6 +258,7 @@ class SmartQuill extends HTMLElement {
         if (explicitTheme === 'light' || explicitTheme === 'dark') {
             this.dataset.scTheme = explicitTheme;
             this._injectThemeStyles();
+            this._syncFullscreenTheme();
             return;
         }
 
@@ -249,6 +276,7 @@ class SmartQuill extends HTMLElement {
             this.dataset.scTheme = _resolve();
             console.log(`[SmartQuill] auto theme resolved → ${this.dataset.scTheme}`);
             this._injectThemeStyles();
+            this._syncFullscreenTheme();
         };
 
         const targets = [document.body, document.documentElement].filter(Boolean);
@@ -263,6 +291,20 @@ class SmartQuill extends HTMLElement {
         this._scMql.addEventListener('change', this._scMqlHandler);
 
         _apply();
+    }
+
+    /**
+     * Keeps the fullscreen overlay (when open) tagged with the same
+     * data-sc-theme as the component itself. The overlay lives on
+     * document.body (outside this element's normal subtree) purely for
+     * stacking/positioning reasons, so it can't inherit dataset.scTheme via
+     * the DOM cascade the way a normal descendant would — this keeps the
+     * two perfectly in sync any time _applyTheme() runs.
+     */
+    _syncFullscreenTheme() {
+        if (this._fsOverlay) {
+            this._fsOverlay.dataset.scTheme = this.dataset.scTheme || 'light';
+        }
     }
 
     // ── Asset loading ────────────────────────────────────────────────────────
@@ -355,6 +397,9 @@ class SmartQuill extends HTMLElement {
 
         // Export buttons
         this._initExportButtons();
+
+        // Fullscreen button
+        if (this.config.allowFullscreen) this._initFullscreenButton();
 
         // ── Text-change handler ──────────────────────────────────────────────
         this.editor.on('text-change', (delta, old, source) => {
@@ -578,6 +623,10 @@ class SmartQuill extends HTMLElement {
 
         wrap.querySelector('.sq-export-html').addEventListener('click', () => this._exportHTML());
         wrap.querySelector('.sq-export-pdf').addEventListener('click',  () => this._exportPDF());
+
+        // Stash a reference so the fullscreen button can be appended into
+        // the SAME extras cluster regardless of init order.
+        this._toolbarExtra = wrap;
     }
 
     _exportHTML() {
@@ -618,6 +667,201 @@ class SmartQuill extends HTMLElement {
         win.addEventListener('load', () => { win.print(); });
         this.dispatchEvent(new CustomEvent('sq-export', { bubbles: true, detail: { format: 'pdf' } }));
     }
+
+    // ── Fullscreen ───────────────────────────────────────────────────────────
+    //
+    // Design notes:
+    // • This is NOT the native Fullscreen API (no requestFullscreen()/zen
+    //   mode). It's a fixed, full-viewport overlay appended to <body>.
+    // • CRITICAL: every CSS rule in this file that styles Quill internals
+    //   (.ql-toolbar, .ql-editor, .ql-stroke, .ql-fill, .sq-label, etc.) is
+    //   scoped with the ancestor selector `smart-quill .ql-toolbar { ... }`.
+    //   Those rules ONLY match while an actual <smart-quill> element is an
+    //   ancestor of the node in the live DOM. An earlier version of this
+    //   feature re-parented just the inner .sq-quill-wrap into the overlay,
+    //   which left .ql-toolbar/.ql-editor with no <smart-quill> ancestor at
+    //   all — every scoped rule silently stopped matching, which is why
+    //   toolbar icons and editor text broke in fullscreen while the layout
+    //   and theme background still looked right (the unscoped overlay rules
+    //   continued to apply).
+    //   FIX: re-parent the whole host element (`this`, the <smart-quill>
+    //   custom element) into the overlay body instead. The element is still
+    //   <smart-quill>, so every `smart-quill ...`-scoped rule keeps matching
+    //   exactly as before — nothing in the stylesheet needed to change.
+    // • Moving (not cloning) `this` means the live Quill instance, its
+    //   bound toolbar handlers, undo history, and current selection all
+    //   keep working unchanged — it's the same DOM node, just relocated.
+    // • _fsPlaceholder is a zero-size marker left behind in the original
+    //   position so _exitFullscreen() knows exactly where to put `this`
+    //   back, regardless of other sibling markup around it.
+    // • Theme: the overlay is given its own [data-sc-theme] attribute kept
+    //   in lockstep with the host element via _syncFullscreenTheme(),
+    //   called from every path that resolves a new theme. The host element
+    //   itself already carries the correct dataset.scTheme (set by
+    //   _applyTheme()) regardless of where it's physically parented, so its
+    //   own internals always theme correctly; the overlay's copy is purely
+    //   so the chrome around it (header bar, backdrop) matches too.
+    // • Escape key and a dedicated ✕ button both close it. Body scroll is
+    //   locked while open and restored exactly on exit.
+
+    _initFullscreenButton() {
+        // Re-use the same toolbar-extra cluster export buttons sit in, so
+        // there's a single consistent "extra controls" group per editor.
+        let wrap = this._toolbarExtra;
+        if (!wrap) {
+            const toolbarEl = this.querySelector('.ql-toolbar');
+            if (!toolbarEl) return;
+            wrap = document.createElement('div');
+            wrap.className = 'sq-toolbar-extra';
+            toolbarEl.appendChild(wrap);
+            this._toolbarExtra = wrap;
+        }
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sq-export-btn sq-fullscreen-toggle';
+        btn.title = 'Open fullscreen';
+        btn.setAttribute('aria-label', 'Open fullscreen');
+        btn.innerHTML = '<i class="ph ph-arrows-out"></i>';
+        btn.addEventListener('click', () => this.toggleFullscreen());
+
+        wrap.appendChild(btn);
+        this._fsToggleBtn = btn;
+    }
+
+    _updateFullscreenButtonIcon() {
+        if (!this._fsToggleBtn) return;
+        const icon = this._fsToggleBtn.querySelector('i');
+        if (this._isFullscreen) {
+            if (icon) icon.className = 'ph ph-arrows-in';
+            this._fsToggleBtn.title = 'Exit fullscreen';
+            this._fsToggleBtn.setAttribute('aria-label', 'Exit fullscreen');
+        } else {
+            if (icon) icon.className = 'ph ph-arrows-out';
+            this._fsToggleBtn.title = 'Open fullscreen';
+            this._fsToggleBtn.setAttribute('aria-label', 'Open fullscreen');
+        }
+    }
+
+    toggleFullscreen() {
+        this._isFullscreen ? this._exitFullscreen() : this._enterFullscreen();
+    }
+
+    _enterFullscreen() {
+        if (this._isFullscreen) return;
+        this._isFullscreen = true;
+
+        // Leave a marker exactly where this <smart-quill> element currently
+        // lives in its parent's markup, so _exitFullscreen() can put it back
+        // precisely afterwards.
+        const placeholder = document.createComment('sq-fullscreen-placeholder');
+        this.before(placeholder);
+        this._fsPlaceholder = placeholder;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'sq-fullscreen-overlay';
+        overlay.dataset.scTheme = this.dataset.scTheme || 'light';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-label', this.config?.label || 'Rich text editor, fullscreen');
+
+        const header = document.createElement('div');
+        header.className = 'sq-fullscreen-header';
+        header.innerHTML = `
+            <span class="sq-fullscreen-title">${this._esc(this.config?.label || 'Editor')}</span>
+            <button type="button" class="sq-fullscreen-close" title="Close fullscreen" aria-label="Close fullscreen">
+                <i class="ph ph-x"></i>
+            </button>
+        `;
+
+        const body = document.createElement('div');
+        body.className = 'sq-fullscreen-body';
+
+        overlay.appendChild(header);
+        overlay.appendChild(body);
+        document.body.appendChild(overlay);
+
+        // Re-parent the LIVE <smart-quill> host element (this) into the
+        // overlay body. Same custom element, same Quill instance — nothing
+        // is reinitialised, and every `smart-quill ...`-scoped style rule
+        // keeps matching because the ancestor tag is still present.
+        // _fsMoving suppresses the disconnect/reconnect lifecycle callbacks
+        // that this synchronous move otherwise triggers (see connectedCallback
+        // / disconnectedCallback notes).
+        this._fsMoving = true;
+        body.appendChild(this);
+        this._fsMoving = false;
+        this.classList.add('sq-in-fullscreen');
+
+        this._fsOverlay = overlay;
+        this._fsPrevBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        document.documentElement.classList.add('sq-fullscreen-active');
+
+        header.querySelector('.sq-fullscreen-close').addEventListener('click', () => this._exitFullscreen());
+
+        this._fsKeyHandler = (e) => {
+            if (e.key === 'Escape') this._exitFullscreen();
+        };
+        document.addEventListener('keydown', this._fsKeyHandler);
+
+        overlay.addEventListener('mousedown', (e) => {
+            if (e.target === overlay) e.preventDefault(); // no click-outside-to-close: avoid accidental data loss
+        });
+
+        this._updateFullscreenButtonIcon();
+        requestAnimationFrame(() => requestAnimationFrame(() => overlay.classList.add('sq-fullscreen-visible')));
+
+        if (this.editor) setTimeout(() => this.editor.focus(), 50);
+
+        this.dispatchEvent(new CustomEvent('sq-fullscreen', { bubbles: true, detail: { fullscreen: true } }));
+    }
+
+    _exitFullscreen(opts = {}) {
+        if (!this._isFullscreen) return;
+        this._isFullscreen = false;
+
+        if (this._fsKeyHandler) {
+            document.removeEventListener('keydown', this._fsKeyHandler);
+            this._fsKeyHandler = null;
+        }
+
+        // Move this <smart-quill> element back to its original spot before
+        // tearing down the overlay. Same _fsMoving guard as on the way in.
+        if (this._fsPlaceholder && this._fsPlaceholder.parentNode) {
+            this._fsMoving = true;
+            this._fsPlaceholder.after(this);
+            this._fsMoving = false;
+            this._fsPlaceholder.remove();
+            this._fsPlaceholder = null;
+        }
+        this.classList.remove('sq-in-fullscreen');
+
+        document.body.style.overflow = this._fsPrevBodyOverflow || '';
+        document.documentElement.classList.remove('sq-fullscreen-active');
+
+        const overlay = this._fsOverlay;
+        this._fsOverlay = null;
+        if (overlay) {
+            overlay.classList.remove('sq-fullscreen-visible');
+            const remove = () => overlay.remove();
+            overlay.addEventListener('transitionend', remove, { once: true });
+            setTimeout(remove, 300);
+        }
+
+        this._updateFullscreenButtonIcon();
+
+        if (!opts.skipRestoreFocus && this.editor) {
+            setTimeout(() => this.editor.focus(), 50);
+        }
+
+        this.dispatchEvent(new CustomEvent('sq-fullscreen', { bubbles: true, detail: { fullscreen: false } }));
+    }
+
+    /** Public API */
+    enterFullscreen() { this._enterFullscreen(); }
+    exitFullscreen()  { this._exitFullscreen(); }
+    isFullscreen()    { return this._isFullscreen; }
 
     // ── Counter ──────────────────────────────────────────────────────────────
 
@@ -876,6 +1120,86 @@ class SmartQuill extends HTMLElement {
                     border-radius: var(--sc-radius, 0.4rem); background: var(--sc-bg-subtle, #f9fafb);
                     color: var(--sc-text, #1a1d23);
                 }
+
+                /* ── Fullscreen overlay ──────────────────────────────────────── */
+                html.sq-fullscreen-active { overflow: hidden; }
+
+                .sq-fullscreen-overlay {
+                    position: fixed; inset: 0; z-index: 10000;
+                    display: flex; flex-direction: column;
+                    background: var(--sc-bg, #ffffff);
+                    opacity: 0;
+                    transition: opacity .18s ease;
+                    font-family: var(--sc-font, system-ui, sans-serif);
+                }
+                .sq-fullscreen-overlay.sq-fullscreen-visible { opacity: 1; }
+
+                .sq-fullscreen-header {
+                    flex: 0 0 auto;
+                    display: flex; align-items: center; justify-content: space-between;
+                    padding: 0.65rem 1rem;
+                    border-bottom: 1px solid var(--sc-border, #e5e7eb);
+                    background: var(--sc-bg-subtle, #f9fafb);
+                }
+                .sq-fullscreen-title {
+                    font-size: 0.9rem; font-weight: 600;
+                    color: var(--sc-text, #1a1d23);
+                }
+                .sq-fullscreen-close {
+                    display: inline-flex; align-items: center; justify-content: center;
+                    width: 32px; height: 32px;
+                    border: none; border-radius: 0.4rem; cursor: pointer;
+                    background: transparent; color: var(--sc-text-muted, #6b7280);
+                    font-size: 1.1rem; transition: background .12s, color .12s;
+                }
+                .sq-fullscreen-close:hover {
+                    background: var(--sc-bg, #ffffff);
+                    color: var(--sc-error, #dc2626);
+                }
+
+                .sq-fullscreen-body {
+                    flex: 1 1 auto;
+                    display: flex; flex-direction: column;
+                    padding: 1rem 1.25rem 1.25rem;
+                    overflow-y: auto;
+                    min-height: 0;
+                }
+
+                /* The whole <smart-quill> host element is what gets moved into
+                   the overlay (see _enterFullscreen) — so it, not just its
+                   inner .sq-quill-wrap, needs to stretch to fill the overlay
+                   body. Counter / autosave badge come along for free since
+                   they're its descendants. */
+                smart-quill.sq-in-fullscreen {
+                    flex: 1 1 auto;
+                    display: flex; flex-direction: column;
+                    min-height: 0;
+                }
+                smart-quill.sq-in-fullscreen .sq-container {
+                    flex: 1 1 auto;
+                    display: flex; flex-direction: column;
+                    min-height: 0;
+                }
+                smart-quill.sq-in-fullscreen .sq-quill-wrap {
+                    flex: 1 1 auto;
+                    display: flex; flex-direction: column;
+                    min-height: 0;
+                }
+                smart-quill.sq-in-fullscreen .ql-container {
+                    flex: 1 1 auto;
+                    min-height: 0;
+                }
+                smart-quill.sq-in-fullscreen .ql-editor {
+                    height: 100%;
+                    max-height: none;
+                }
+                /* Hide the inline label inside fullscreen — the overlay header
+                   already shows the same title, so we avoid a duplicate. */
+                smart-quill.sq-in-fullscreen .sq-label {
+                    display: none;
+                }
+
+                .sq-fullscreen-toggle i { font-size: 1rem; }
             `;
             document.head.appendChild(common);
         }
@@ -968,6 +1292,25 @@ class SmartQuill extends HTMLElement {
                 smart-quill .sq-quill-wrap:focus-within .ql-toolbar {
                     border-color: var(--sc-focus, #818cf8) !important;
                 }
+
+                /* Fullscreen overlay — dark */
+                .sq-fullscreen-overlay[data-sc-theme="dark"] {
+                    background: var(--sc-bg, #1f2937) !important;
+                }
+                .sq-fullscreen-overlay[data-sc-theme="dark"] .sq-fullscreen-header {
+                    background: var(--sc-bg-subtle, #374151) !important;
+                    border-color: var(--sc-border, #4b5563) !important;
+                }
+                .sq-fullscreen-overlay[data-sc-theme="dark"] .sq-fullscreen-title {
+                    color: var(--sc-text, #e5e7eb) !important;
+                }
+                .sq-fullscreen-overlay[data-sc-theme="dark"] .sq-fullscreen-close {
+                    color: var(--sc-text-muted, #9ca3af) !important;
+                }
+                .sq-fullscreen-overlay[data-sc-theme="dark"] .sq-fullscreen-close:hover {
+                    background: var(--sc-bg, #1f2937) !important;
+                    color: var(--sc-error, #f87171) !important;
+                }
             `;
         } else {
             themeStyle.textContent = `
@@ -988,6 +1331,15 @@ class SmartQuill extends HTMLElement {
                 smart-quill .sq-readonly-content {
                     background: var(--sc-bg-subtle, #f9fafb) !important;
                     color: var(--sc-text, #1a1d23) !important;
+                }
+
+                /* Fullscreen overlay — light */
+                .sq-fullscreen-overlay[data-sc-theme="light"] {
+                    background: var(--sc-bg, #ffffff) !important;
+                }
+                .sq-fullscreen-overlay[data-sc-theme="light"] .sq-fullscreen-header {
+                    background: var(--sc-bg-subtle, #f9fafb) !important;
+                    border-color: var(--sc-border, #e5e7eb) !important;
                 }
             `;
         }
