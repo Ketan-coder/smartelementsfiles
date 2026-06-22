@@ -931,25 +931,24 @@ theme="dark"    <!-- always dark -->
 
 ```html
 <!-- Import individual components as needed -->
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_core.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_motion.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_effect.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_filter_box.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/counter_animation.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_button.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/button.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_search_input.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/input.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/rich_text_input.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_list_tile.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_image.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_table.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_form.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_grid.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_state.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_chart.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_permission.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2/smart_data.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_core.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_motion.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_effect.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_filter_box.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/counter_animation.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_button.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_search_input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/rich_text_input.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_list_tile.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_image.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_table.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_form.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_grid.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_state.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_chart.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_permission.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Ketan-coder/smartelementsfiles@v2.0.1/smart_data.js"></script>
 ```
 
 ---
