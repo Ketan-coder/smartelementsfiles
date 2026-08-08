@@ -2694,6 +2694,60 @@ class SmartPageEditor extends SPEBase {
         return [...new Set([...base, 'value', 'readonly'])];
     }
 
+    // ── Theme helpers — self-contained fallback ───────────────────────────
+    // SmartElement (smart_core.js) provides these when loaded. These stubs
+    // make the component work standalone without smart_core.js so a missing
+    // or late-loading script never crashes connectedCallback.
+
+    _getMode() {
+        // If SmartElement is loaded, its prototype already has this — this
+        // stub only runs when SPEBase === HTMLElement.
+        if (window.SmartElement && window.SmartElement.prototype._getMode) {
+            return window.SmartElement.prototype._getMode.call(this);
+        }
+        const s = (this.getAttribute('styled') || '').toLowerCase().trim();
+        return s === 'bootstrap' ? 'bootstrap' : 'default';
+    }
+
+    _getTheme() {
+        if (window.SmartElement && window.SmartElement.prototype._getTheme) {
+            return window.SmartElement.prototype._getTheme.call(this);
+        }
+        if (this._getMode() !== 'default') return null;
+        const t = (this.getAttribute('theme') || 'auto').toLowerCase().trim();
+        return ['light', 'dark', 'auto'].includes(t) ? t : 'auto';
+    }
+
+    _applyTheme() {
+        if (window.SmartElement && window.SmartElement.prototype._applyTheme) {
+            return window.SmartElement.prototype._applyTheme.call(this);
+        }
+        // Standalone fallback: resolve theme and set dataset.scTheme
+        if (this._getMode() !== 'default') return;
+
+        const explicit = this._getTheme();
+        if (explicit === 'light' || explicit === 'dark') {
+            this.dataset.scTheme = explicit;
+            return;
+        }
+
+        // auto: check ancestor → OS preference → default light
+        const ancestor = this.parentElement?.closest('[data-sc-theme]');
+        if (ancestor) {
+            this.dataset.scTheme = ancestor.dataset.scTheme || 'light';
+        } else {
+            const mql = window.matchMedia?.('(prefers-color-scheme: dark)');
+            this.dataset.scTheme = mql?.matches ? 'dark' : 'light';
+            if (mql && !this._scMql) {
+                this._scMql = mql;
+                this._scMqlHandler = () => {
+                    this.dataset.scTheme = mql.matches ? 'dark' : 'light';
+                };
+                mql.addEventListener('change', this._scMqlHandler);
+            }
+        }
+    }
+
     connectedCallback() {
         if (this._initialized) return;
         this._initialized = true;
@@ -2714,7 +2768,7 @@ class SmartPageEditor extends SPEBase {
 
         this.config = { name, label, placeholder: ph, required: req, requiredMessage: reqMsg, isReadonly: ro };
 
-        this._applyTheme();
+        if (typeof this._applyTheme === 'function') this._applyTheme();
         this._injectStyles();
 
         const mode    = this._getMode?.() || 'default';
@@ -3700,4 +3754,4 @@ pre.spe-editable {
     }
 }
 
-customElements.define('smart-page-editor', SmartPageEditor);
+if (!customElements.get('smart-page-editor')) customElements.define('smart-page-editor', SmartPageEditor);
