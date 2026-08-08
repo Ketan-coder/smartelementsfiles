@@ -216,9 +216,12 @@ function injectSharedStyles() {
             --sc-modal-confirm-bg:    #2a0e18;
             --sc-modal-confirm-text:  #f090a8;
             --sc-modal-confirm-border:#4a1828;
+        }
 
-            /* Apply surface colour directly so body/wrapper looks dark too */
-            background-color: transparent; /* allow bg to be set on body/html when [data-sc-theme] is there */
+        /* Apply surface colour only to page-level elements (body/html), not to components */
+        body[data-sc-theme="dark"],
+        html[data-sc-theme="dark"] {
+            background-color: var(--sc-bg);
             color: var(--sc-text);
         }
 
@@ -274,8 +277,12 @@ function injectSharedStyles() {
             --sc-modal-confirm-bg:    #fdeef2;
             --sc-modal-confirm-text:  #a8203c;
             --sc-modal-confirm-border:#f5b8c8;
+        }
 
-            background-color: transparent; /* allow bg to be set on body/html when [data-sc-theme] is there */
+        /* Apply surface colour only to page-level elements (body/html), not to components */
+        body[data-sc-theme="light"],
+        html[data-sc-theme="light"] {
+            background-color: var(--sc-bg);
             color: var(--sc-text);
         }
 
@@ -467,7 +474,7 @@ class SmartElement extends HTMLElement {
      */
     _applyTheme() {
         if (this._getMode() !== 'default') return;
-    
+
         // Tear down previous listeners
         if (this._scMqlHandler) {
             this._scMql?.removeEventListener('change', this._scMqlHandler);
@@ -478,49 +485,45 @@ class SmartElement extends HTMLElement {
             this._scObserver.disconnect();
             this._scObserver = null;
         }
-    
-        // ── NEW: an explicit data-sc-theme set directly on THIS element wins
-        // immediately, with no ancestor/OS resolution at all. ──────────────
-        const ownDataTheme = (this.getAttribute('data-sc-theme') || '').toLowerCase().trim();
-        if (ownDataTheme === 'light' || ownDataTheme === 'dark') {
-            this.dataset.scTheme = ownDataTheme;
-            return;
-        }
-    
-        const theme = this._getTheme(); // reads theme= attribute
-    
+
+        const theme = this._getTheme();
+
         // Explicit theme attribute on this element — apply and stop
         if (theme === 'light' || theme === 'dark') {
             this.dataset.scTheme = theme;
             return;
         }
-    
-        // theme === 'auto': resolve from ANCESTOR (excluding self) → OS → default light
+
+        // theme === 'auto': resolve from ancestor → OS → default light
+        // Always set up a MutationObserver on body so JS changes are caught
+        // regardless of which path wins right now
         const _resolve = () => {
-            // NEW: search starting from the parent, not this element,
-            // so we never accidentally match our own data-sc-theme attribute
-            // as if it were an ancestor's.
-            const ancestor = this.parentElement?.closest('[data-sc-theme]');
-            if (ancestor) return ancestor.dataset.scTheme || 'light';
+            const ancestor = this.closest('[data-sc-theme]');
+            if (ancestor && ancestor !== this) {
+                return ancestor.dataset.scTheme || 'light';
+            }
             if (this._scMql) return this._scMql.matches ? 'dark' : 'light';
             return 'light';
         };
-    
+
         const _apply = () => {
             this.dataset.scTheme = _resolve();
         };
-    
+
+        // Watch body (and html) for attribute changes — covers JS toggle
         const targets = [document.body, document.documentElement].filter(Boolean);
         this._scObserver = new MutationObserver(_apply);
         targets.forEach(t => this._scObserver.observe(t, {
             attributes: true,
             attributeFilter: ['data-sc-theme']
         }));
-    
+
+        // Also watch OS preference
         this._scMql = window.matchMedia('(prefers-color-scheme: dark)');
         this._scMqlHandler = _apply;
         this._scMql.addEventListener('change', this._scMqlHandler);
-    
+
+        // Resolve immediately
         _apply();
     }
 
