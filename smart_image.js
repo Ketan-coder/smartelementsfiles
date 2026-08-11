@@ -1,8 +1,90 @@
 /**
  * SmartImage - A declarative, attribute-driven Web Component
  * Supports: lazy loading, shimmer/spinner skeleton, fallback, fade-in,
- * caption, rounded/circle/hover-zoom/click-preview, aspect-ratio, fit
+ * caption, rounded/circle/hover-zoom/click-preview, aspect-ratio, fit,
+ * automatic HEIC/HEIF conversion
  */
+
+// ─── Module-level HEIC/HEIF sharing ────────────────────────────────────────
+// Scoped to this module, not `window`, so it can't collide with anything
+// else on the page. Shared by every <smart-image> instance so that, e.g., a
+// list of 50 iPhone photos:
+//  - loads the heic2any conversion library exactly once, no matter how many
+//    instances need it or how many mount before it finishes loading
+//  - fetches + converts each distinct source file exactly once — instances
+//    that share a `src` (or the same photo shown twice) just await the same
+//    in-flight promise instead of redoing the work
+//  - ref-counts consumers of each resulting blob URL, so it's only revoked
+//    once every instance using it has moved on or disconnected
+
+let _heicLibraryPromise = null;
+
+/** src -> { promise: Promise<objectUrl>, refCount: number } */
+const _heicCache = new Map();
+
+function _loadHeicLibrary(cdnUrl) {
+  if (window.heic2any) return Promise.resolve(window.heic2any);
+  if (_heicLibraryPromise) return _heicLibraryPromise;
+
+  _heicLibraryPromise = new Promise((resolve, reject) => {
+    const existing = document.getElementById('smart-image-heic2any');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(window.heic2any));
+      existing.addEventListener('error', () => reject(new Error('heic2any script failed to load')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.id = 'smart-image-heic2any';
+    script.src = cdnUrl;
+    script.onload = () => resolve(window.heic2any);
+    script.onerror = () => reject(new Error('heic2any script failed to load from CDN'));
+    document.head.appendChild(script);
+  }).catch(err => {
+    // Don't cache a dead promise forever — let a later attempt retry.
+    _heicLibraryPromise = null;
+    throw err;
+  });
+
+  return _heicLibraryPromise;
+}
+
+/** Returns a shared, ref-counted promise resolving to a blob: URL for `src`. */
+function _acquireHeicObjectUrl(src, cdnUrl) {
+  let entry = _heicCache.get(src);
+  if (!entry) {
+    const promise = _loadHeicLibrary(cdnUrl)
+      .then(heic2any => fetch(src)
+        .then(res => {
+          if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
+          return res.blob();
+        })
+        .then(sourceBlob => heic2any({ blob: sourceBlob, toType: 'image/jpeg', quality: 0.85 })))
+      .then(result => URL.createObjectURL(Array.isArray(result) ? result[0] : result))
+      .catch(err => {
+        // Don't poison the cache on failure — a retry (or a fixed network
+        // condition) should be able to try again from scratch.
+        _heicCache.delete(src);
+        throw err;
+      });
+    entry = { promise, refCount: 0 };
+    _heicCache.set(src, entry);
+  }
+  entry.refCount++;
+  return entry.promise;
+}
+
+/** Call once per matching `_acquireHeicObjectUrl` when an instance is done with `src`. */
+function _releaseHeicObjectUrl(src) {
+  const entry = _heicCache.get(src);
+  if (!entry) return;
+  entry.refCount--;
+  if (entry.refCount <= 0) {
+    _heicCache.delete(src);
+    entry.promise
+      .then(url => { try { URL.revokeObjectURL(url); } catch (_) { /* no-op */ } })
+      .catch(() => { /* failed conversions never created a URL */ });
+  }
+}
 
 class SmartImage extends HTMLElement {
   constructor() {
@@ -11,6 +93,8 @@ class SmartImage extends HTMLElement {
     this._loaded = false;
     this._failed = false;
     this._retryCount = 0;
+    this._triedConversion = false;
+    this._heldHeicSrc = null; // src this instance currently holds a cache ref for
   }
 
   static get observedAttributes() {
@@ -18,7 +102,8 @@ class SmartImage extends HTMLElement {
       'src', 'fallback-src', 'caption', 'alt',
       'width', 'height', 'aspect-ratio', 'fit',
       'animation-type', 'rounded', 'circle',
-      'hover-zoom', 'click-preview', 'lazy'
+      'hover-zoom', 'click-preview', 'lazy',
+      'type', 'heic-convert', 'heic-cdn'
     ];
   }
 
@@ -30,6 +115,7 @@ class SmartImage extends HTMLElement {
 
   disconnectedCallback() {
     if (this._observer) this._observer.disconnect();
+    this._releaseHeldHeic();
   }
 
   attributeChangedCallback(name, oldVal, newVal) {
@@ -37,7 +123,17 @@ class SmartImage extends HTMLElement {
       this._loaded = false;
       this._failed = false;
       this._retryCount = 0;
+      this._triedConversion = false;
       this._build();
+    }
+  }
+
+  // Release this instance's claim on a shared HEIC blob URL, if it holds one.
+  // Safe to call even when nothing is held.
+  _releaseHeldHeic() {
+    if (this._heldHeicSrc) {
+      _releaseHeicObjectUrl(this._heldHeicSrc);
+      this._heldHeicSrc = null;
     }
   }
 
@@ -67,6 +163,8 @@ class SmartImage extends HTMLElement {
     const animType = this.getAttribute('animation-type') ||
       ((width && height) ? 'shimmer' : 'spinner');
 
+    this._releaseHeldHeic();
+    this._triedConversion = false;
     this.innerHTML = '';
 
     const wrapper = document.createElement('div');
@@ -106,30 +204,91 @@ class SmartImage extends HTMLElement {
   }
 
   // ─── Load Image ──────────────────────────────────────────────────────────────
+  // Every entry point into decoding funnels through here and is wrapped so a
+  // bad/unsupported file can never throw out of the component — it always
+  // resolves into either a rendered image or the broken-state UI.
 
   loadImage(src, wrapper, fit) {
-    const img = new Image();
+    try {
+      const img = new Image();
 
-    img.onload = () => {
-      this._loaded = true;
-      this.renderImage(src, wrapper, fit);
-    };
+      img.onload = () => {
+        this._loaded = true;
+        this.renderImage(src, wrapper, fit);
+      };
 
-    img.onerror = () => {
+      img.onerror = () => {
+        this._onNativeLoadFailed(src, wrapper, fit);
+      };
+
+      img.src = src;
+    } catch (err) {
+      // Malformed URL or other synchronous failure — still route through the
+      // same recovery path instead of letting the error escape.
+      this._onNativeLoadFailed(src, wrapper, fit);
+    }
+  }
+
+  // Called when the browser's native <img> decoder rejects the file. This is
+  // normal for formats most browsers can't decode natively — HEIC/HEIF being
+  // the common real-world case (default camera format on iPhones) — so before
+  // giving up we try converting it client-side.
+  _onNativeLoadFailed(src, wrapper, fit) {
+    if (!this._triedConversion && this._isHeicHeif(src)) {
+      this._triedConversion = true;
+      this._convertHeicAndLoad(src, wrapper, fit);
+      return;
+    }
+    this.handleError(wrapper, fit);
+  }
+
+  // ─── Format Detection ────────────────────────────────────────────────────────
+
+  _isHeicHeif(src) {
+    if (this.getAttribute('heic-convert') === 'false') return false;
+    const typeAttr = (this.getAttribute('type') || '').toLowerCase();
+    if (typeAttr === 'heic' || typeAttr === 'heif') return true;
+    const clean = String(src || '').split(/[?#]/)[0].toLowerCase();
+    return /\.hei[cf]$/.test(clean);
+  }
+
+  // ─── HEIC/HEIF Conversion ────────────────────────────────────────────────────
+  // Browsers other than Safari have no native HEIC/HEIF decoder, so <img> just
+  // fires onerror for them. We fetch the bytes, convert to JPEG in the browser
+  // via heic2any (loaded lazily from a CDN, only when actually needed), and
+  // point the <img> at the resulting blob URL instead.
+
+  async _convertHeicAndLoad(src, wrapper, fit) {
+    try {
+      const cdnUrl = this.getAttribute('heic-cdn') ||
+        'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+
+      const objectUrl = await _acquireHeicObjectUrl(src, cdnUrl);
+      this._heldHeicSrc = src; // now responsible for releasing this ref
+
+      const img = new Image();
+      img.onload = () => {
+        this._loaded = true;
+        this.renderImage(objectUrl, wrapper, fit);
+      };
+      img.onerror = () => this.handleError(wrapper, fit);
+      img.src = objectUrl;
+    } catch (err) {
+      console.warn('[SmartImage] HEIC/HEIF conversion failed, showing fallback state.', err);
       this.handleError(wrapper, fit);
-    };
-
-    img.src = src;
+    }
   }
 
   // ─── Error ───────────────────────────────────────────────────────────────────
 
   handleError(wrapper, fit) {
     this._failed = true;
+    this._releaseHeldHeic();
     const fallback = this.getAttribute('fallback-src');
 
     if (fallback && this._retryCount === 0) {
       this._retryCount++;
+      this._triedConversion = false;
       this.loadImage(fallback, wrapper, fit);
       return;
     }
@@ -152,6 +311,7 @@ class SmartImage extends HTMLElement {
     errorEl.querySelector('.si-retry').addEventListener('click', () => {
       this._failed = false;
       this._retryCount = 0;
+      this._triedConversion = false;
       errorEl.remove();
       wrapper.appendChild(this.renderSkeleton(
         this.getAttribute('animation-type') || ((this.getAttribute('width') && this.getAttribute('height')) ? 'shimmer' : 'spinner')
